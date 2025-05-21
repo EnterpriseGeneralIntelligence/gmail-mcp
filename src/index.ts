@@ -146,35 +146,6 @@ const getQuotedContent = (thread: Thread) => {
   return quotedContent.join('\n')
 }
 
-const getThreadHeaders = (thread: Thread) => {
-  let headers: string[] = []
-
-  if (!thread.messages?.length) return headers
-
-  const lastMessage = thread.messages[thread.messages.length - 1]
-  const references: string[] = []
-
-  let subjectHeader = findHeader(lastMessage.payload?.headers || [], 'subject')
-  if (subjectHeader) {
-    if (!subjectHeader.toLowerCase().startsWith('re:')) {
-      subjectHeader = `Re: ${subjectHeader}`
-    }
-    headers.push(`Subject: ${subjectHeader}`)
-  }
-
-  const messageIdHeader = findHeader(lastMessage.payload?.headers || [], 'message-id')
-  if (messageIdHeader) {
-    headers.push(`In-Reply-To: ${messageIdHeader}`)
-    references.push(messageIdHeader)
-  }
-
-  const referencesHeader = findHeader(lastMessage.payload?.headers || [], 'references')
-  if (referencesHeader) references.unshift(...referencesHeader.split(' '))
-
-  if (references.length > 0) headers.push(`References: ${references.join(' ')}`)
-
-  return headers
-}
 
 const wrapTextBody = (text: string): string => text.split('\n').map(line => {
   if (line.length <= 76) return line
@@ -194,8 +165,39 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   if (params.to?.length) message.push(`To: ${wrapTextBody(params.to.join(', '))}`)
   if (params.cc?.length) message.push(`Cc: ${wrapTextBody(params.cc.join(', '))}`)
   if (params.bcc?.length) message.push(`Bcc: ${wrapTextBody(params.bcc.join(', '))}`)
-  if (thread) {
-    message.push(...getThreadHeaders(thread).map(header => wrapTextBody(header)))
+  
+  // Handle threading headers for proper conversation grouping
+  if (thread && thread.messages?.length) {
+    // Get the first message in the thread to extract headers
+    const firstMessage = thread.messages[0];
+    const lastMessage = thread.messages[thread.messages.length - 1];
+    
+    // Add subject with Re: prefix if needed
+    let subjectHeader = findHeader(lastMessage.payload?.headers || [], 'subject') || params.subject || '(No Subject)';
+    if (subjectHeader && !subjectHeader.toLowerCase().startsWith('re:')) {
+      subjectHeader = `Re: ${subjectHeader}`;
+    }
+    message.push(`Subject: ${wrapTextBody(subjectHeader)}`);
+    
+    // Add critical threading headers
+    const references: string[] = [];
+    
+    // Collect all Message-IDs from the thread
+    thread.messages.forEach(msg => {
+      const msgId = findHeader(msg.payload?.headers || [], 'message-id');
+      if (msgId) references.push(msgId);
+    });
+    
+    // Add In-Reply-To header (points to the last message in the thread)
+    const lastMessageId = findHeader(lastMessage.payload?.headers || [], 'message-id');
+    if (lastMessageId) {
+      message.push(`In-Reply-To: ${lastMessageId}`);
+    }
+    
+    // Add References header with all message IDs in the thread
+    if (references.length > 0) {
+      message.push(`References: ${references.join(' ')}`);
+    }
   } else if (params.subject) {
     message.push(`Subject: ${wrapTextBody(params.subject)}`)
   } else {
