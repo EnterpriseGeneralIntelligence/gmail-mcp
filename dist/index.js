@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createStatelessServer } from "@smithery/sdk/server/stateless.js";
 import { z } from "zod";
 import { google } from 'googleapis';
 import fs from "fs";
 import { createOAuth2Client, launchAuthServer, validateCredentials } from "./oauth2.js";
-import { MCP_CONFIG_DIR, PORT } from "./config.js";
+import { MCP_CONFIG_DIR } from "./config.js";
 const RESPONSE_HEADERS_LIST = [
     'Date',
     'From',
@@ -909,8 +908,5 @@ const main = async () => {
     const stdioServer = createServer({});
     const transport = new StdioServerTransport();
     await stdioServer.connect(transport);
-    // Streamable HTTP Server
-    const { app } = createStatelessServer(createServer);
-    app.listen(PORT);
 };
 main();

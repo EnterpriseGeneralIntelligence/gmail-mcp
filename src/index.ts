@@ -165,35 +165,35 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   if (params.to?.length) message.push(`To: ${wrapTextBody(params.to.join(', '))}`)
   if (params.cc?.length) message.push(`Cc: ${wrapTextBody(params.cc.join(', '))}`)
   if (params.bcc?.length) message.push(`Bcc: ${wrapTextBody(params.bcc.join(', '))}`)
-  
+
   // Handle threading headers for proper conversation grouping
   if (thread && thread.messages?.length) {
     // Get the first message in the thread to extract headers
     const firstMessage = thread.messages[0];
     const lastMessage = thread.messages[thread.messages.length - 1];
-    
+
     // Add subject with Re: prefix if needed
     let subjectHeader = findHeader(lastMessage.payload?.headers || [], 'subject') || params.subject || '(No Subject)';
     if (subjectHeader && !subjectHeader.toLowerCase().startsWith('re:')) {
       subjectHeader = `Re: ${subjectHeader}`;
     }
     message.push(`Subject: ${wrapTextBody(subjectHeader)}`);
-    
+
     // Add critical threading headers
     const references: string[] = [];
-    
+
     // Collect all Message-IDs from the thread
     thread.messages.forEach(msg => {
       const msgId = findHeader(msg.payload?.headers || [], 'message-id');
       if (msgId) references.push(msgId);
     });
-    
+
     // Add In-Reply-To header (points to the last message in the thread)
     const lastMessageId = findHeader(lastMessage.payload?.headers || [], 'message-id');
     if (lastMessageId) {
       message.push(`In-Reply-To: ${lastMessageId}`);
     }
-    
+
     // Add References header with all message IDs in the thread
     if (references.length > 0) {
       message.push(`References: ${references.join(' ')}`);
@@ -1305,7 +1305,7 @@ function createServer({ config }: { config?: Record<string, any> }) {
       })
     }
   )
-  
+
   return server.server
 }
 
@@ -1322,10 +1322,6 @@ const main = async () => {
   const stdioServer = createServer({})
   const transport = new StdioServerTransport()
   await stdioServer.connect(transport)
-
-  // Streamable HTTP Server
-  const { app } = createStatelessServer(createServer)
-  app.listen(PORT)
 }
 
 main()
