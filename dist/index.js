@@ -105,6 +105,14 @@ const getQuotedContent = (thread) => {
     }
     return quotedContent.join('\n');
 };
+const sanitizeSubject = (subject) => {
+    // Remove or replace special characters that can cause issues in email headers
+    return subject
+        .replace(/[\r\n\t]/g, ' ') // Replace line breaks and tabs with spaces
+        .replace(/[^\x20-\x7E]/g, '') // Remove non-ASCII characters
+        .replace(/\s+/g, ' ') // Replace multiple spaces with single space
+        .trim();
+};
 const wrapTextBody = (text) => text.split('\n').map(line => {
     if (line.length <= 76)
         return line;
@@ -135,7 +143,7 @@ const constructRawMessage = async (gmail, params) => {
         if (subjectHeader && !subjectHeader.toLowerCase().startsWith('re:')) {
             subjectHeader = `Re: ${subjectHeader}`;
         }
-        message.push(`Subject: ${wrapTextBody(subjectHeader)}`);
+        message.push(`Subject: ${wrapTextBody(sanitizeSubject(subjectHeader))}`);
         // Add critical threading headers
         const references = [];
         // Collect all Message-IDs from the thread
@@ -155,7 +163,7 @@ const constructRawMessage = async (gmail, params) => {
         }
     }
     else if (params.subject) {
-        message.push(`Subject: ${wrapTextBody(params.subject)}`);
+        message.push(`Subject: ${wrapTextBody(sanitizeSubject(params.subject))}`);
     }
     else {
         message.push('Subject: (No Subject)');
