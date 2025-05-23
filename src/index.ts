@@ -732,6 +732,7 @@ function createServer({ config }: { config?: Record<string, any> }) {
     async (params) => {
       return handleTool(config, async (gmail: gmail_v1.Gmail) => {
         const { data } = await gmail.users.threads.list({ userId: 'me', ...params })
+        console.log(data)
 
         if (data.threads) {
           data.threads = data.threads.map(thread => {

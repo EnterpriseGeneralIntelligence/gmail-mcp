@@ -527,6 +527,7 @@ function createServer({ config }) {
     }, async (params) => {
         return handleTool(config, async (gmail) => {
             const { data } = await gmail.users.threads.list({ userId: 'me', ...params });
+            console.log(data);
             if (data.threads) {
                 data.threads = data.threads.map(thread => {
                     if (thread.messages) {
