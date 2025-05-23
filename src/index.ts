@@ -147,6 +147,15 @@ const getQuotedContent = (thread: Thread) => {
 }
 
 
+const sanitizeSubject = (subject: string): string => {
+  // Remove or replace special characters that can cause issues in email headers
+  return subject
+    .replace(/[\r\n\t]/g, ' ') // Replace line breaks and tabs with spaces
+    .replace(/[^\x20-\x7E]/g, '') // Remove non-ASCII characters
+    .replace(/\s+/g, ' ') // Replace multiple spaces with single space
+    .trim()
+}
+
 const wrapTextBody = (text: string): string => text.split('\n').map(line => {
   if (line.length <= 76) return line
   const chunks = line.match(/.{1,76}/g) || []
@@ -177,7 +186,7 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
     if (subjectHeader && !subjectHeader.toLowerCase().startsWith('re:')) {
       subjectHeader = `Re: ${subjectHeader}`;
     }
-    message.push(`Subject: ${wrapTextBody(subjectHeader)}`);
+    message.push(`Subject: ${wrapTextBody(sanitizeSubject(subjectHeader))}`);
 
     // Add critical threading headers
     const references: string[] = [];
@@ -199,7 +208,7 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
       message.push(`References: ${references.join(' ')}`);
     }
   } else if (params.subject) {
-    message.push(`Subject: ${wrapTextBody(params.subject)}`)
+    message.push(`Subject: ${wrapTextBody(sanitizeSubject(params.subject))}`)
   } else {
     message.push('Subject: (No Subject)')
   }
