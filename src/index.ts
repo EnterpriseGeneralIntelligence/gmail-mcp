@@ -148,27 +148,27 @@ const getQuotedContent = (thread: Thread) => {
 
 const getReplyAllRecipients = (thread: Thread, currentUserEmail: string): { to: string[], cc: string[] } => {
   if (!thread.messages?.length) return { to: [], cc: [] }
-  
+
   // Get the last message in the thread
   const lastMessage = thread.messages[thread.messages.length - 1]
   if (!lastMessage?.payload?.headers) return { to: [], cc: [] }
-  
+
   const headers = lastMessage.payload.headers
   const fromHeader = findHeader(headers, 'from')
   const toHeader = findHeader(headers, 'to')
   const ccHeader = findHeader(headers, 'cc')
-  
+
   // Parse email addresses
   const fromEmails = fromHeader ? formatEmailList(fromHeader) : []
   const toEmails = toHeader ? formatEmailList(toHeader) : []
   const ccEmails = ccHeader ? formatEmailList(ccHeader) : []
-  
+
   // Check if the last message was sent by the current user
   const wasSentByUser = lastMessage.labelIds?.includes('SENT')
-  
+
   let toRecipients: string[] = []
   let ccRecipients: string[] = []
-  
+
   if (wasSentByUser) {
     // If the user sent the last message, reply to the same recipients
     toRecipients = [...toEmails]
@@ -176,17 +176,17 @@ const getReplyAllRecipients = (thread: Thread, currentUserEmail: string): { to: 
   } else {
     // If the user received the message, reply to the sender and include all other recipients
     toRecipients = [...fromEmails]
-    
+
     // Add all original recipients to CC except the current user
     const allCcRecipients = [...toEmails, ...ccEmails].filter(email => {
       // Extract just the email part for comparison (remove display names)
       const emailOnly = email.match(/<([^>]+)>/) ? email.match(/<([^>]+)>/)![1] : email
       return emailOnly.toLowerCase() !== currentUserEmail.toLowerCase()
     })
-    
+
     ccRecipients = [...new Set(allCcRecipients)] // Remove duplicates
   }
-  
+
   return { to: toRecipients, cc: ccRecipients }
 }
 
@@ -209,7 +209,7 @@ const wrapTextBody = (text: string): string => text.split('\n').map(line => {
 const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) => {
   let thread: Thread | null = null
   let userProfile: any = null
-  
+
   // Get user's email address for reply-all logic
   try {
     const profileResponse = await gmail.users.getProfile({ userId: 'me' })
@@ -217,9 +217,9 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   } catch (error) {
     console.error('Failed to get user profile:', error)
   }
-  
+
   const userEmail = userProfile?.emailAddress || ''
-  
+
   if (params.threadId) {
     const threadParams = { userId: 'me', id: params.threadId, format: 'full' }
     const { data } = await gmail.users.threads.get(threadParams)
@@ -231,15 +231,15 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
 
   // Start building the message headers
   const message = []
-  
+
   // For replies to threads, implement reply-all behavior
   if (thread && thread.messages?.length) {
     const { to: replyToRecipients, cc: replyCcRecipients } = getReplyAllRecipients(thread, userEmail)
-    
+
     // Merge explicitly provided recipients with those from reply-all logic
     const toRecipients = params.to?.length ? params.to : replyToRecipients
     if (toRecipients.length) message.push(`To: ${wrapTextBody(toRecipients.join(', '))}`)
-    
+
     // Handle CC recipients - combine from thread reply-all and new params
     let ccRecipients: string[] = [...(params.cc || [])]
     replyCcRecipients.forEach(email => {
@@ -253,7 +253,7 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
     if (params.to?.length) message.push(`To: ${wrapTextBody(params.to.join(', '))}`)
     if (params.cc?.length) message.push(`Cc: ${wrapTextBody(params.cc.join(', '))}`)
   }
-  
+
   // Handle BCC recipients
   if (params.bcc?.length) message.push(`Bcc: ${wrapTextBody(params.bcc.join(', '))}`)
 
@@ -361,9 +361,8 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
         .replace(/>/g, '&gt;')
         .replace(/\n/g, '<br>')
         .replace(/^>+ (.*?)$/gm, '<div class="quoted">$1</div>')
-      
+
       message.push(`  <div class="quoted">
-    <p>On ${new Date().toLocaleString()}, wrote:</p>
     ${htmlQuoted}
   </div>`)
     }

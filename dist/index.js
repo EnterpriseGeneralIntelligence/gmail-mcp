@@ -300,7 +300,6 @@ const constructRawMessage = async (gmail, params) => {
                 .replace(/\n/g, '<br>')
                 .replace(/^>+ (.*?)$/gm, '<div class="quoted">$1</div>');
             message.push(`  <div class="quoted">
-    <p>On ${new Date().toLocaleString()}, wrote:</p>
     ${htmlQuoted}
   </div>`);
         }
