@@ -10,6 +10,8 @@ const RESPONSE_HEADERS_LIST = [
     'Date',
     'From',
     'To',
+    'Cc',
+    'Bcc',
     'Subject',
     'Message-ID',
     'In-Reply-To',
