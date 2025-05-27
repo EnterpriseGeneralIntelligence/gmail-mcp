@@ -105,6 +105,43 @@ const getQuotedContent = (thread) => {
     }
     return quotedContent.join('\n');
 };
+const getReplyAllRecipients = (thread, currentUserEmail) => {
+    if (!thread.messages?.length)
+        return { to: [], cc: [] };
+    // Get the last message in the thread
+    const lastMessage = thread.messages[thread.messages.length - 1];
+    if (!lastMessage?.payload?.headers)
+        return { to: [], cc: [] };
+    const headers = lastMessage.payload.headers;
+    const fromHeader = findHeader(headers, 'from');
+    const toHeader = findHeader(headers, 'to');
+    const ccHeader = findHeader(headers, 'cc');
+    // Parse email addresses
+    const fromEmails = fromHeader ? formatEmailList(fromHeader) : [];
+    const toEmails = toHeader ? formatEmailList(toHeader) : [];
+    const ccEmails = ccHeader ? formatEmailList(ccHeader) : [];
+    // Check if the last message was sent by the current user
+    const wasSentByUser = lastMessage.labelIds?.includes('SENT');
+    let toRecipients = [];
+    let ccRecipients = [];
+    if (wasSentByUser) {
+        // If the user sent the last message, reply to the same recipients
+        toRecipients = [...toEmails];
+        ccRecipients = [...ccEmails];
+    }
+    else {
+        // If the user received the message, reply to the sender and include all other recipients
+        toRecipients = [...fromEmails];
+        // Add all original recipients to CC except the current user
+        const allCcRecipients = [...toEmails, ...ccEmails].filter(email => {
+            // Extract just the email part for comparison (remove display names)
+            const emailOnly = email.match(/<([^>]+)>/) ? email.match(/<([^>]+)>/)[1] : email;
+            return emailOnly.toLowerCase() !== currentUserEmail.toLowerCase();
+        });
+        ccRecipients = [...new Set(allCcRecipients)]; // Remove duplicates
+    }
+    return { to: toRecipients, cc: ccRecipients };
+};
 const sanitizeSubject = (subject) => {
     // Remove or replace special characters that can cause issues in email headers
     return subject
@@ -121,6 +158,16 @@ const wrapTextBody = (text) => text.split('\n').map(line => {
 }).join('\n');
 const constructRawMessage = async (gmail, params) => {
     let thread = null;
+    let userProfile = null;
+    // Get user's email address for reply-all logic
+    try {
+        const profileResponse = await gmail.users.getProfile({ userId: 'me' });
+        userProfile = profileResponse.data;
+    }
+    catch (error) {
+        console.error('Failed to get user profile:', error);
+    }
+    const userEmail = userProfile?.emailAddress || '';
     if (params.threadId) {
         const threadParams = { userId: 'me', id: params.threadId, format: 'full' };
         const { data } = await gmail.users.threads.get(threadParams);
@@ -130,42 +177,33 @@ const constructRawMessage = async (gmail, params) => {
     const boundary = `boundary_${Date.now().toString(16)}`;
     // Start building the message headers
     const message = [];
-    if (params.to?.length)
-        message.push(`To: ${wrapTextBody(params.to.join(', '))}`);
-    // Handle CC recipients - combine from thread and new params
-    let ccRecipients = [...(params.cc || [])];
+    // For replies to threads, implement reply-all behavior
     if (thread && thread.messages?.length) {
-        const lastMessage = thread.messages[thread.messages.length - 1];
-        const ccHeader = findHeader(lastMessage.payload?.headers || [], 'cc');
-        if (ccHeader) {
-            const threadCcRecipients = formatEmailList(ccHeader);
-            // Add unique recipients from thread
-            threadCcRecipients.forEach(email => {
-                if (!ccRecipients.includes(email)) {
-                    ccRecipients.push(email);
-                }
-            });
-        }
+        const { to: replyToRecipients, cc: replyCcRecipients } = getReplyAllRecipients(thread, userEmail);
+        // Merge explicitly provided recipients with those from reply-all logic
+        const toRecipients = params.to?.length ? params.to : replyToRecipients;
+        if (toRecipients.length)
+            message.push(`To: ${wrapTextBody(toRecipients.join(', '))}`);
+        // Handle CC recipients - combine from thread reply-all and new params
+        let ccRecipients = [...(params.cc || [])];
+        replyCcRecipients.forEach(email => {
+            if (!ccRecipients.includes(email)) {
+                ccRecipients.push(email);
+            }
+        });
+        if (ccRecipients.length)
+            message.push(`Cc: ${wrapTextBody(ccRecipients.join(', '))}`);
     }
-    if (ccRecipients.length)
-        message.push(`Cc: ${wrapTextBody(ccRecipients.join(', '))}`);
-    // Handle BCC recipients - combine from thread and new params
-    let bccRecipients = [...(params.bcc || [])];
-    if (thread && thread.messages?.length) {
-        const lastMessage = thread.messages[thread.messages.length - 1];
-        const bccHeader = findHeader(lastMessage.payload?.headers || [], 'bcc');
-        if (bccHeader) {
-            const threadBccRecipients = formatEmailList(bccHeader);
-            // Add unique recipients from thread
-            threadBccRecipients.forEach(email => {
-                if (!bccRecipients.includes(email)) {
-                    bccRecipients.push(email);
-                }
-            });
-        }
+    else {
+        // For new messages, just use the provided recipients
+        if (params.to?.length)
+            message.push(`To: ${wrapTextBody(params.to.join(', '))}`);
+        if (params.cc?.length)
+            message.push(`Cc: ${wrapTextBody(params.cc.join(', '))}`);
     }
-    if (bccRecipients.length)
-        message.push(`Bcc: ${wrapTextBody(bccRecipients.join(', '))}`);
+    // Handle BCC recipients
+    if (params.bcc?.length)
+        message.push(`Bcc: ${wrapTextBody(params.bcc.join(', '))}`);
     // Handle threading headers for proper conversation grouping
     let subjectHeader = '(No Subject)';
     if (thread && thread.messages?.length) {
