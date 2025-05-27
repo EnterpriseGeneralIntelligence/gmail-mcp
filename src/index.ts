@@ -172,8 +172,40 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
 
   const message = []
   if (params.to?.length) message.push(`To: ${wrapTextBody(params.to.join(', '))}`)
-  if (params.cc?.length) message.push(`Cc: ${wrapTextBody(params.cc.join(', '))}`)
-  if (params.bcc?.length) message.push(`Bcc: ${wrapTextBody(params.bcc.join(', '))}`)
+  
+  // Handle CC recipients - combine from thread and new params
+  let ccRecipients: string[] = [...(params.cc || [])]
+  if (thread && thread.messages?.length) {
+    const lastMessage = thread.messages[thread.messages.length - 1];
+    const ccHeader = findHeader(lastMessage.payload?.headers || [], 'cc');
+    if (ccHeader) {
+      const threadCcRecipients = formatEmailList(ccHeader);
+      // Add unique recipients from thread
+      threadCcRecipients.forEach(email => {
+        if (!ccRecipients.includes(email)) {
+          ccRecipients.push(email);
+        }
+      });
+    }
+  }
+  if (ccRecipients.length) message.push(`Cc: ${wrapTextBody(ccRecipients.join(', '))}`);
+  
+  // Handle BCC recipients - combine from thread and new params
+  let bccRecipients: string[] = [...(params.bcc || [])]
+  if (thread && thread.messages?.length) {
+    const lastMessage = thread.messages[thread.messages.length - 1];
+    const bccHeader = findHeader(lastMessage.payload?.headers || [], 'bcc');
+    if (bccHeader) {
+      const threadBccRecipients = formatEmailList(bccHeader);
+      // Add unique recipients from thread
+      threadBccRecipients.forEach(email => {
+        if (!bccRecipients.includes(email)) {
+          bccRecipients.push(email);
+        }
+      });
+    }
+  }
+  if (bccRecipients.length) message.push(`Bcc: ${wrapTextBody(bccRecipients.join(', '))}`);
 
   // Handle threading headers for proper conversation grouping
   if (thread && thread.messages?.length) {
