@@ -126,20 +126,54 @@ const constructRawMessage = async (gmail, params) => {
         const { data } = await gmail.users.threads.get(threadParams);
         thread = data;
     }
+    // Generate a boundary string for multipart messages
+    const boundary = `boundary_${Date.now().toString(16)}`;
+    // Start building the message headers
     const message = [];
     if (params.to?.length)
         message.push(`To: ${wrapTextBody(params.to.join(', '))}`);
-    if (params.cc?.length)
-        message.push(`Cc: ${wrapTextBody(params.cc.join(', '))}`);
-    if (params.bcc?.length)
-        message.push(`Bcc: ${wrapTextBody(params.bcc.join(', '))}`);
+    // Handle CC recipients - combine from thread and new params
+    let ccRecipients = [...(params.cc || [])];
+    if (thread && thread.messages?.length) {
+        const lastMessage = thread.messages[thread.messages.length - 1];
+        const ccHeader = findHeader(lastMessage.payload?.headers || [], 'cc');
+        if (ccHeader) {
+            const threadCcRecipients = formatEmailList(ccHeader);
+            // Add unique recipients from thread
+            threadCcRecipients.forEach(email => {
+                if (!ccRecipients.includes(email)) {
+                    ccRecipients.push(email);
+                }
+            });
+        }
+    }
+    if (ccRecipients.length)
+        message.push(`Cc: ${wrapTextBody(ccRecipients.join(', '))}`);
+    // Handle BCC recipients - combine from thread and new params
+    let bccRecipients = [...(params.bcc || [])];
+    if (thread && thread.messages?.length) {
+        const lastMessage = thread.messages[thread.messages.length - 1];
+        const bccHeader = findHeader(lastMessage.payload?.headers || [], 'bcc');
+        if (bccHeader) {
+            const threadBccRecipients = formatEmailList(bccHeader);
+            // Add unique recipients from thread
+            threadBccRecipients.forEach(email => {
+                if (!bccRecipients.includes(email)) {
+                    bccRecipients.push(email);
+                }
+            });
+        }
+    }
+    if (bccRecipients.length)
+        message.push(`Bcc: ${wrapTextBody(bccRecipients.join(', '))}`);
     // Handle threading headers for proper conversation grouping
+    let subjectHeader = '(No Subject)';
     if (thread && thread.messages?.length) {
         // Get the first message in the thread to extract headers
         const firstMessage = thread.messages[0];
         const lastMessage = thread.messages[thread.messages.length - 1];
         // Add subject with Re: prefix if needed
-        let subjectHeader = findHeader(lastMessage.payload?.headers || [], 'subject') || params.subject || '(No Subject)';
+        subjectHeader = findHeader(lastMessage.payload?.headers || [], 'subject') || params.subject || '(No Subject)';
         if (subjectHeader && !subjectHeader.toLowerCase().startsWith('re:')) {
             subjectHeader = `Re: ${subjectHeader}`;
         }
@@ -163,17 +197,25 @@ const constructRawMessage = async (gmail, params) => {
         }
     }
     else if (params.subject) {
+        subjectHeader = params.subject;
         message.push(`Subject: ${wrapTextBody(sanitizeSubject(params.subject))}`);
     }
     else {
         message.push('Subject: (No Subject)');
     }
+    // Set up multipart MIME message
+    message.push('MIME-Version: 1.0');
+    message.push(`Content-Type: multipart/alternative; boundary=${boundary}`);
+    message.push('');
+    message.push(`--${boundary}`);
+    // Add text/plain part
     message.push('Content-Type: text/plain; charset="UTF-8"');
     message.push('Content-Transfer-Encoding: quoted-printable');
-    message.push('MIME-Version: 1.0');
     message.push('');
+    // Add the body content
     if (params.body)
         message.push(wrapTextBody(params.body));
+    // Add quoted content for replies
     if (thread) {
         const quotedContent = getQuotedContent(thread);
         if (quotedContent) {
@@ -181,6 +223,54 @@ const constructRawMessage = async (gmail, params) => {
             message.push(wrapTextBody(quotedContent));
         }
     }
+    // Add HTML part
+    message.push('');
+    message.push(`--${boundary}`);
+    message.push('Content-Type: text/html; charset="UTF-8"');
+    message.push('Content-Transfer-Encoding: quoted-printable');
+    message.push('');
+    // Convert plain text to HTML with basic formatting
+    let htmlBody = '';
+    if (params.body) {
+        // Simple conversion of plain text to HTML
+        htmlBody = params.body
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/\n/g, '<br>');
+    }
+    // Add HTML body with some basic styling
+    message.push(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: Arial, sans-serif; }
+    .quoted { color: #777; border-left: 2px solid #ccc; padding-left: 10px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div>${htmlBody}</div>`);
+    // Add quoted content in HTML format
+    if (thread) {
+        const quotedContent = getQuotedContent(thread);
+        if (quotedContent) {
+            const htmlQuoted = quotedContent
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/\n/g, '<br>')
+                .replace(/^>+ (.*?)$/gm, '<div class="quoted">$1</div>');
+            message.push(`  <div class="quoted">
+    <p>On ${new Date().toLocaleString()}, wrote:</p>
+    ${htmlQuoted}
+  </div>`);
+        }
+    }
+    message.push('</body></html>');
+    // Close the multipart message
+    message.push('');
+    message.push(`--${boundary}--`);
     return Buffer.from(message.join('\r\n')).toString('base64url').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 };
 function createServer({ config }) {
