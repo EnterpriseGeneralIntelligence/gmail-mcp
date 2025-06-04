@@ -387,9 +387,8 @@ function createServer({ config }: { config?: Record<string, any> }) {
   })
 
   server.tool("create_draft",
-    "Create a draft email in Gmail. Note the mechanics of the raw parameter.",
+    "Create a draft email in Gmail.",
     {
-      raw: z.string().optional().describe("The entire email message in base64url encoded RFC 2822 format, ignores params.to, cc, bcc, subject, body, includeBodyHtml if provided"),
       threadId: z.string().optional().describe("The thread ID to associate this draft with"),
       to: z.array(z.string()).optional().describe("List of recipient email addresses"),
       cc: z.array(z.string()).optional().describe("List of CC recipient email addresses"),
@@ -400,8 +399,7 @@ function createServer({ config }: { config?: Record<string, any> }) {
     },
     async (params) => {
       return handleTool(config, async (gmail: gmail_v1.Gmail) => {
-        let raw = params.raw
-        if (!raw) raw = await constructRawMessage(gmail, params)
+        const raw = await constructRawMessage(gmail, params)
 
         const draftCreateParams: DraftCreateParams = { userId: 'me', requestBody: { message: { raw } } }
         if (params.threadId && draftCreateParams.requestBody?.message) {
@@ -765,9 +763,8 @@ function createServer({ config }: { config?: Record<string, any> }) {
   )
 
   server.tool("send_message",
-    "Send an email message to specified recipients. Note the mechanics of the raw parameter.",
+    "Send an email message to specified recipients.",
     {
-      raw: z.string().optional().describe("The entire email message in base64url encoded RFC 2822 format, ignores params.to, cc, bcc, subject, body, includeBodyHtml if provided"),
       threadId: z.string().optional().describe("The thread ID to associate this message with"),
       to: z.array(z.string()).optional().describe("List of recipient email addresses"),
       cc: z.array(z.string()).optional().describe("List of CC recipient email addresses"),
@@ -778,8 +775,7 @@ function createServer({ config }: { config?: Record<string, any> }) {
     },
     async (params) => {
       return handleTool(config, async (gmail: gmail_v1.Gmail) => {
-        let raw = params.raw
-        if (!raw) raw = await constructRawMessage(gmail, params)
+        const raw = await constructRawMessage(gmail, params)
 
         const messageSendParams: MessageSendParams = { userId: 'me', requestBody: { raw } }
         if (params.threadId && messageSendParams.requestBody) {
