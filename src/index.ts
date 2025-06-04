@@ -222,9 +222,14 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   const userEmail = userProfile?.emailAddress || ''
 
   if (params.threadId) {
-    const threadParams = { userId: 'me', id: params.threadId, format: 'full' }
-    const { data } = await gmail.users.threads.get(threadParams)
-    thread = data
+    try {
+      const threadParams = { userId: 'me', id: params.threadId, format: 'full' }
+      const { data } = await gmail.users.threads.get(threadParams)
+      thread = data
+    } catch (error) {
+      // If thread doesn't exist, ignore the threadId and create a new thread
+      thread = null
+    }
   }
 
   // Generate a boundary string for multipart messages
