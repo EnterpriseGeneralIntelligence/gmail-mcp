@@ -93,14 +93,73 @@ const processMessagePart = (messagePart: MessagePart): MessagePart => {
   return messagePart
 }
 
+const htmlToPlainText = (html: string): string => {
+  return html
+    // Remove script and style elements completely
+    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '')
+    // Convert common HTML elements to plain text equivalents
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?(p|div|h[1-6])[^>]*>/gi, '\n')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '• ')
+    // Remove all other HTML tags
+    .replace(/<[^>]*>/g, '')
+    // Decode HTML entities
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    // Clean up extra whitespace
+    .replace(/\n\s*\n/g, '\n')
+    .trim()
+}
+
 const getNestedHistory = (messagePart: MessagePart, level = 1): string => {
+  // First try to find text/plain content
   if (messagePart.mimeType === 'text/plain' && messagePart.body?.data) {
     const { data } = decodedBody(messagePart.body)
     if (!data) return ''
     return data.split('\n').map(line => '>' + (line.startsWith('>') ? '' : ' ') + line).join('\n')
   }
 
-  return (messagePart.parts || []).map(p => getNestedHistory(p, level + 1)).filter(p => p).join('\n')
+  // If no text/plain, try text/html
+  if (messagePart.mimeType === 'text/html' && messagePart.body?.data) {
+    const { data } = decodedBody(messagePart.body)
+    if (!data) return ''
+    const plainText = htmlToPlainText(data)
+    return plainText.split('\n').map(line => '>' + (line.startsWith('>') ? '' : ' ') + line).join('\n')
+  }
+
+  // Recursively search through parts
+  if (messagePart.parts && messagePart.parts.length > 0) {
+    // First try to find text/plain in any part
+    for (const part of messagePart.parts) {
+      if (part.mimeType === 'text/plain' && part.body?.data) {
+        const { data } = decodedBody(part.body)
+        if (data) {
+          return data.split('\n').map(line => '>' + (line.startsWith('>') ? '' : ' ') + line).join('\n')
+        }
+      }
+    }
+
+    // If no text/plain found, try text/html in any part
+    for (const part of messagePart.parts) {
+      if (part.mimeType === 'text/html' && part.body?.data) {
+        const { data } = decodedBody(part.body)
+        if (data) {
+          const plainText = htmlToPlainText(data)
+          return plainText.split('\n').map(line => '>' + (line.startsWith('>') ? '' : ' ') + line).join('\n')
+        }
+      }
+    }
+
+    // Recursively search nested parts
+    return messagePart.parts.map(p => getNestedHistory(p, level + 1)).filter(p => p).join('\n')
+  }
+
+  return ''
 }
 
 const findHeader = (headers: MessagePartHeader[] | undefined, name: string) => {
