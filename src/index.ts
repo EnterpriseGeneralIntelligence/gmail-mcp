@@ -175,14 +175,8 @@ const formatEmailList = (emailList: string | null | undefined) => {
 const getQuotedContent = (thread: Thread) => {
   if (!thread.messages?.length) return ''
 
-  const sentMessages = thread.messages.filter(msg =>
-    msg.labelIds?.includes('SENT') ||
-    (!msg.labelIds?.includes('DRAFT') && findHeader(msg.payload?.headers || [], 'date'))
-  )
-
-  if (!sentMessages.length) return ''
-
-  const lastMessage = sentMessages[sentMessages.length - 1]
+  // Get the last message in the thread (most recent)
+  const lastMessage = thread.messages[thread.messages.length - 1]
   if (!lastMessage?.payload) return ''
 
   let quotedContent = []
