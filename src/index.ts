@@ -416,18 +416,14 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   if (thread) {
     const quotedContent = getQuotedContent(thread)
     if (quotedContent) {
-      // Gmail recognizes this specific pattern and makes it collapsible
-      message.push(`  <div class="gmail_quote">
-    <div dir="ltr">
-      <div class="gmail_attr">
-        ${quotedContent
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/\n/g, '<br>')}
-      </div>
-    </div>
-  </div>`)
+      // Gmail recognizes blockquote structure for collapsible quotes
+      message.push(`  <blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex;">
+    ${quotedContent
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')}
+  </blockquote>`)
     }
   }
 
