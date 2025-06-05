@@ -210,7 +210,14 @@ const getQuotedContent = (thread: Thread): { text: string, html?: string } => {
   }
 
   if (messageContent.html) {
-    quotedHtmlContent = messageContent.html
+    // Add the header to HTML content as well
+    const fromHeader = findHeader(lastMessage.payload.headers || [], 'from')
+    const dateHeader = findHeader(lastMessage.payload.headers || [], 'date')
+    if (fromHeader && dateHeader) {
+      quotedHtmlContent = `<div>On ${dateHeader} ${fromHeader} wrote:</div><br>${messageContent.html}`
+    } else {
+      quotedHtmlContent = messageContent.html
+    }
   }
 
   return {
