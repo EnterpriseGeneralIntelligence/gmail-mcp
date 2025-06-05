@@ -61,14 +61,84 @@ const processMessagePart = (messagePart) => {
     }
     return messagePart;
 };
-const getNestedHistory = (messagePart, level = 1) => {
+const htmlToPlainText = (html) => {
+    return html
+        // Remove script and style elements completely
+        .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '')
+        // Convert common HTML elements to plain text equivalents
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/?(p|div|h[1-6])[^>]*>/gi, '\n')
+        .replace(/<\/li>/gi, '\n')
+        .replace(/<li[^>]*>/gi, '• ')
+        // Remove all other HTML tags
+        .replace(/<[^>]*>/g, '')
+        // Decode HTML entities
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        // Clean up extra whitespace
+        .replace(/\n\s*\n/g, '\n')
+        .trim();
+};
+const extractMessageContent = (messagePart) => {
+    let textContent = [];
+    let htmlContent = undefined;
+    // Check if current part has text content
     if (messagePart.mimeType === 'text/plain' && messagePart.body?.data) {
         const { data } = decodedBody(messagePart.body);
-        if (!data)
-            return '';
-        return data.split('\n').map(line => '>' + (line.startsWith('>') ? '' : ' ') + line).join('\n');
+        if (data) {
+            // For plain text, use the traditional > prefix for quoting
+            textContent.push(data.split('\n').map(line => '> ' + line).join('\n'));
+        }
     }
-    return (messagePart.parts || []).map(p => getNestedHistory(p, level + 1)).filter(p => p).join('\n');
+    else if (messagePart.mimeType === 'text/html' && messagePart.body?.data) {
+        const { data } = decodedBody(messagePart.body);
+        if (data) {
+            // For HTML, keep the original HTML content for blockquote wrapping
+            htmlContent = data;
+            // Also create a plain text version for fallback
+            const plainText = htmlToPlainText(data);
+            textContent.push(plainText.split('\n').map(line => '> ' + line).join('\n'));
+        }
+    }
+    // Recursively process nested parts to find the best content
+    if (messagePart.parts && messagePart.parts.length > 0) {
+        // Prefer text/plain over text/html for quoting
+        const textPart = messagePart.parts.find(part => part.mimeType === 'text/plain');
+        const htmlPart = messagePart.parts.find(part => part.mimeType === 'text/html');
+        if (textPart) {
+            const textResult = extractMessageContent(textPart);
+            if (textResult.text)
+                textContent.push(textResult.text);
+        }
+        else if (htmlPart) {
+            const htmlResult = extractMessageContent(htmlPart);
+            if (htmlResult.text)
+                textContent.push(htmlResult.text);
+            if (htmlResult.html)
+                htmlContent = htmlResult.html;
+        }
+        else {
+            // Process other parts recursively
+            const nestedResults = messagePart.parts
+                .map(part => extractMessageContent(part))
+                .filter(result => result.text.trim());
+            if (nestedResults.length > 0) {
+                textContent.push(nestedResults.map(result => result.text).join('\n'));
+                // Use the first HTML content found
+                if (!htmlContent) {
+                    htmlContent = nestedResults.find(result => result.html)?.html;
+                }
+            }
+        }
+    }
+    return {
+        text: textContent.join('\n'),
+        html: htmlContent
+    };
 };
 const findHeader = (headers, name) => {
     if (!headers || !Array.isArray(headers) || !name)
@@ -82,30 +152,45 @@ const formatEmailList = (emailList) => {
 };
 const getQuotedContent = (thread) => {
     if (!thread.messages?.length)
-        return '';
-    const sentMessages = thread.messages.filter(msg => msg.labelIds?.includes('SENT') ||
-        (!msg.labelIds?.includes('DRAFT') && findHeader(msg.payload?.headers || [], 'date')));
-    if (!sentMessages.length)
-        return '';
-    const lastMessage = sentMessages[sentMessages.length - 1];
+        return { text: '' };
+    // Get the last message in the thread (most recent)
+    const lastMessage = thread.messages[thread.messages.length - 1];
     if (!lastMessage?.payload)
-        return '';
-    let quotedContent = [];
+        return { text: '' };
+    let quotedTextContent = [];
+    let quotedHtmlContent = undefined;
     if (lastMessage.payload.headers) {
         const fromHeader = findHeader(lastMessage.payload.headers || [], 'from');
         const dateHeader = findHeader(lastMessage.payload.headers || [], 'date');
         if (fromHeader && dateHeader) {
-            quotedContent.push('');
-            quotedContent.push(`On ${dateHeader} ${fromHeader} wrote:`);
-            quotedContent.push('');
+            quotedTextContent.push('');
+            quotedTextContent.push(`On ${dateHeader} ${fromHeader} wrote:`);
+            quotedTextContent.push('');
         }
     }
-    const nestedHistory = getNestedHistory(lastMessage.payload);
-    if (nestedHistory) {
-        quotedContent.push(nestedHistory);
-        quotedContent.push('');
+    const messageContent = extractMessageContent(lastMessage.payload);
+    if (messageContent.text) {
+        quotedTextContent.push(messageContent.text);
+        quotedTextContent.push('');
     }
-    return quotedContent.join('\n');
+    if (messageContent.html) {
+        // Add the header to HTML content as well
+        const fromHeader = findHeader(lastMessage.payload.headers || [], 'from');
+        const dateHeader = findHeader(lastMessage.payload.headers || [], 'date');
+        if (fromHeader && dateHeader) {
+            // Extract email address from the from header (handle both "Name <email>" and "email" formats)
+            const emailMatch = fromHeader.match(/<([^>]+)>/);
+            const emailAddress = emailMatch ? emailMatch[1] : fromHeader;
+            quotedHtmlContent = `<div>On ${dateHeader} &lt;${emailAddress}&gt; wrote:</div><br>${messageContent.html}`;
+        }
+        else {
+            quotedHtmlContent = messageContent.html;
+        }
+    }
+    return {
+        text: quotedTextContent.join('\n'),
+        html: quotedHtmlContent
+    };
 };
 const getReplyAllRecipients = (thread, currentUserEmail) => {
     if (!thread.messages?.length)
@@ -264,9 +349,9 @@ const constructRawMessage = async (gmail, params) => {
     // Add quoted content for replies
     if (thread) {
         const quotedContent = getQuotedContent(thread);
-        if (quotedContent) {
+        if (quotedContent.text) {
             message.push('');
-            message.push(wrapTextBody(quotedContent));
+            message.push(wrapTextBody(quotedContent.text));
         }
     }
     // Add HTML part
@@ -285,31 +370,32 @@ const constructRawMessage = async (gmail, params) => {
             .replace(/>/g, '&gt;')
             .replace(/\n/g, '<br>');
     }
-    // Add HTML body with some basic styling
+    // Add HTML body with Gmail-compatible quoted content formatting
     message.push(`<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <style>
-    body { font-family: Arial, sans-serif; }
-    .quoted { color: #777; border-left: 2px solid #ccc; padding-left: 10px; margin-top: 10px; }
-  </style>
 </head>
 <body>
   <div>${htmlBody}</div>`);
-    // Add quoted content in HTML format
+    // Add quoted content in Gmail's native collapsible format
     if (thread) {
         const quotedContent = getQuotedContent(thread);
-        if (quotedContent) {
-            const htmlQuoted = quotedContent
+        if (quotedContent.html) {
+            // For HTML content, wrap it directly in blockquote without converting to text
+            message.push(`  <blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex;">
+    ${quotedContent.html}
+  </blockquote>`);
+        }
+        else if (quotedContent.text) {
+            // Fallback to text content if no HTML is available
+            message.push(`  <blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex;">
+    ${quotedContent.text
                 .replace(/&/g, '&amp;')
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;')
-                .replace(/\n/g, '<br>')
-                .replace(/^>+ (.*?)$/gm, '<div class="quoted">$1</div>');
-            message.push(`  <div class="quoted">
-    ${htmlQuoted}
-  </div>`);
+                .replace(/\n/g, '<br>')}
+  </blockquote>`);
         }
     }
     message.push('</body></html>');
