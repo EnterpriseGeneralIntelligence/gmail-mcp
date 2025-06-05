@@ -118,7 +118,7 @@ const htmlToPlainText = (html: string): string => {
 
 const extractMessageContent = (messagePart: MessagePart): { text: string, html?: string } => {
   let textContent = []
-  let htmlContent = null
+  let htmlContent: string | undefined = undefined
 
   // Check if current part has text content
   if (messagePart.mimeType === 'text/plain' && messagePart.body?.data) {
@@ -161,7 +161,7 @@ const extractMessageContent = (messagePart: MessagePart): { text: string, html?:
         textContent.push(nestedResults.map(result => result.text).join('\n'))
         // Use the first HTML content found
         if (!htmlContent) {
-          htmlContent = nestedResults.find(result => result.html)?.html || null
+          htmlContent = nestedResults.find(result => result.html)?.html
         }
       }
     }
@@ -191,7 +191,7 @@ const getQuotedContent = (thread: Thread): { text: string, html?: string } => {
   if (!lastMessage?.payload) return { text: '' }
 
   let quotedTextContent = []
-  let quotedHtmlContent = null
+  let quotedHtmlContent: string | undefined = undefined
 
   if (lastMessage.payload.headers) {
     const fromHeader = findHeader(lastMessage.payload.headers || [], 'from')
