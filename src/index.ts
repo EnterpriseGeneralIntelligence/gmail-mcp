@@ -403,32 +403,30 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
       .replace(/\n/g, '<br>')
   }
 
-  // Add HTML body with some basic styling
+  // Add HTML body with Gmail-compatible quoted content formatting
   message.push(`<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <style>
-    body { font-family: Arial, sans-serif; }
-    .quoted { color: #777; border-left: 2px solid #ccc; padding-left: 10px; margin-top: 10px; }
-  </style>
 </head>
 <body>
   <div>${htmlBody}</div>`)
 
-  // Add quoted content in HTML format
+  // Add quoted content in Gmail's native collapsible format
   if (thread) {
     const quotedContent = getQuotedContent(thread)
     if (quotedContent) {
-      const htmlQuoted = quotedContent
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/\n/g, '<br>')
-        .replace(/^>+ (.*?)$/gm, '<div class="quoted">$1</div>')
-
-      message.push(`  <div class="quoted">
-    ${htmlQuoted}
+      // Gmail recognizes this specific pattern and makes it collapsible
+      message.push(`  <div class="gmail_quote">
+    <div dir="ltr">
+      <div class="gmail_attr">
+        ${quotedContent
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/\n/g, '<br>')}
+      </div>
+    </div>
   </div>`)
     }
   }
