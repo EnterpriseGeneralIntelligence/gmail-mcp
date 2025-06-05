@@ -116,22 +116,25 @@ const htmlToPlainText = (html: string): string => {
     .trim()
 }
 
-const extractMessageContent = (messagePart: MessagePart): string => {
-  let content = []
+const extractMessageContent = (messagePart: MessagePart): { text: string, html?: string } => {
+  let textContent = []
+  let htmlContent = null
 
   // Check if current part has text content
   if (messagePart.mimeType === 'text/plain' && messagePart.body?.data) {
     const { data } = decodedBody(messagePart.body)
     if (data) {
       // For plain text, use the traditional > prefix for quoting
-      content.push(data.split('\n').map(line => '> ' + line).join('\n'))
+      textContent.push(data.split('\n').map(line => '> ' + line).join('\n'))
     }
   } else if (messagePart.mimeType === 'text/html' && messagePart.body?.data) {
     const { data } = decodedBody(messagePart.body)
     if (data) {
-      // For HTML, convert to plain text first, then apply quoting
+      // For HTML, keep the original HTML content for blockquote wrapping
+      htmlContent = data
+      // Also create a plain text version for fallback
       const plainText = htmlToPlainText(data)
-      content.push(plainText.split('\n').map(line => '> ' + line).join('\n'))
+      textContent.push(plainText.split('\n').map(line => '> ' + line).join('\n'))
     }
   }
 
@@ -142,25 +145,32 @@ const extractMessageContent = (messagePart: MessagePart): string => {
     const htmlPart = messagePart.parts.find(part => part.mimeType === 'text/html')
     
     if (textPart) {
-      const textContent = extractMessageContent(textPart)
-      if (textContent) content.push(textContent)
+      const textResult = extractMessageContent(textPart)
+      if (textResult.text) textContent.push(textResult.text)
     } else if (htmlPart) {
-      const htmlContent = extractMessageContent(htmlPart)
-      if (htmlContent) content.push(htmlContent)
+      const htmlResult = extractMessageContent(htmlPart)
+      if (htmlResult.text) textContent.push(htmlResult.text)
+      if (htmlResult.html) htmlContent = htmlResult.html
     } else {
       // Process other parts recursively
-      const nestedContent = messagePart.parts
+      const nestedResults = messagePart.parts
         .map(part => extractMessageContent(part))
-        .filter(text => text.trim())
-        .join('\n')
+        .filter(result => result.text.trim())
       
-      if (nestedContent) {
-        content.push(nestedContent)
+      if (nestedResults.length > 0) {
+        textContent.push(nestedResults.map(result => result.text).join('\n'))
+        // Use the first HTML content found
+        if (!htmlContent) {
+          htmlContent = nestedResults.find(result => result.html)?.html || null
+        }
       }
     }
   }
 
-  return content.join('\n')
+  return {
+    text: textContent.join('\n'),
+    html: htmlContent
+  }
 }
 
 const findHeader = (headers: MessagePartHeader[] | undefined, name: string) => {
@@ -173,32 +183,40 @@ const formatEmailList = (emailList: string | null | undefined) => {
   return emailList.split(',').map(email => email.trim())
 }
 
-const getQuotedContent = (thread: Thread) => {
-  if (!thread.messages?.length) return ''
+const getQuotedContent = (thread: Thread): { text: string, html?: string } => {
+  if (!thread.messages?.length) return { text: '' }
 
   // Get the last message in the thread (most recent)
   const lastMessage = thread.messages[thread.messages.length - 1]
-  if (!lastMessage?.payload) return ''
+  if (!lastMessage?.payload) return { text: '' }
 
-  let quotedContent = []
+  let quotedTextContent = []
+  let quotedHtmlContent = null
 
   if (lastMessage.payload.headers) {
     const fromHeader = findHeader(lastMessage.payload.headers || [], 'from')
     const dateHeader = findHeader(lastMessage.payload.headers || [], 'date')
     if (fromHeader && dateHeader) {
-      quotedContent.push('')
-      quotedContent.push(`On ${dateHeader} ${fromHeader} wrote:`)
-      quotedContent.push('')
+      quotedTextContent.push('')
+      quotedTextContent.push(`On ${dateHeader} ${fromHeader} wrote:`)
+      quotedTextContent.push('')
     }
   }
 
   const messageContent = extractMessageContent(lastMessage.payload)
-  if (messageContent) {
-    quotedContent.push(messageContent)
-    quotedContent.push('')
+  if (messageContent.text) {
+    quotedTextContent.push(messageContent.text)
+    quotedTextContent.push('')
   }
 
-  return quotedContent.join('\n')
+  if (messageContent.html) {
+    quotedHtmlContent = messageContent.html
+  }
+
+  return {
+    text: quotedTextContent.join('\n'),
+    html: quotedHtmlContent
+  }
 }
 
 const getReplyAllRecipients = (thread: Thread, currentUserEmail: string): { to: string[], cc: string[] } => {
@@ -374,9 +392,9 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   // Add quoted content for replies
   if (thread) {
     const quotedContent = getQuotedContent(thread)
-    if (quotedContent) {
+    if (quotedContent.text) {
       message.push('')
-      message.push(wrapTextBody(quotedContent))
+      message.push(wrapTextBody(quotedContent.text))
     }
   }
 
@@ -410,10 +428,15 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   // Add quoted content in Gmail's native collapsible format
   if (thread) {
     const quotedContent = getQuotedContent(thread)
-    if (quotedContent) {
-      // Gmail recognizes blockquote structure for collapsible quotes
+    if (quotedContent.html) {
+      // For HTML content, wrap it directly in blockquote without converting to text
       message.push(`  <blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex;">
-    ${quotedContent
+    ${quotedContent.html}
+  </blockquote>`)
+    } else if (quotedContent.text) {
+      // Fallback to text content if no HTML is available
+      message.push(`  <blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex;">
+    ${quotedContent.text
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
