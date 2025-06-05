@@ -116,32 +116,47 @@ const htmlToPlainText = (html: string): string => {
     .trim()
 }
 
-const getNestedHistory = (messagePart: MessagePart, level = 1): string => {
+const extractMessageContent = (messagePart: MessagePart): string => {
   let content = []
 
   // Check if current part has text content
   if (messagePart.mimeType === 'text/plain' && messagePart.body?.data) {
     const { data } = decodedBody(messagePart.body)
     if (data) {
+      // For plain text, use the traditional > prefix for quoting
       content.push(data.split('\n').map(line => '> ' + line).join('\n'))
     }
   } else if (messagePart.mimeType === 'text/html' && messagePart.body?.data) {
     const { data } = decodedBody(messagePart.body)
     if (data) {
+      // For HTML, convert to plain text first, then apply quoting
       const plainText = htmlToPlainText(data)
       content.push(plainText.split('\n').map(line => '> ' + line).join('\n'))
     }
   }
 
-  // Recursively process nested parts to maintain quote hierarchy
+  // Recursively process nested parts to find the best content
   if (messagePart.parts && messagePart.parts.length > 0) {
-    const nestedContent = messagePart.parts
-      .map(part => getNestedHistory(part, level + 1))
-      .filter(text => text.trim())
-      .join('\n')
+    // Prefer text/plain over text/html for quoting
+    const textPart = messagePart.parts.find(part => part.mimeType === 'text/plain')
+    const htmlPart = messagePart.parts.find(part => part.mimeType === 'text/html')
     
-    if (nestedContent) {
-      content.push(nestedContent)
+    if (textPart) {
+      const textContent = extractMessageContent(textPart)
+      if (textContent) content.push(textContent)
+    } else if (htmlPart) {
+      const htmlContent = extractMessageContent(htmlPart)
+      if (htmlContent) content.push(htmlContent)
+    } else {
+      // Process other parts recursively
+      const nestedContent = messagePart.parts
+        .map(part => extractMessageContent(part))
+        .filter(text => text.trim())
+        .join('\n')
+      
+      if (nestedContent) {
+        content.push(nestedContent)
+      }
     }
   }
 
@@ -177,9 +192,9 @@ const getQuotedContent = (thread: Thread) => {
     }
   }
 
-  const nestedHistory = getNestedHistory(lastMessage.payload)
-  if (nestedHistory) {
-    quotedContent.push(nestedHistory)
+  const messageContent = extractMessageContent(lastMessage.payload)
+  if (messageContent) {
+    quotedContent.push(messageContent)
     quotedContent.push('')
   }
 
