@@ -117,49 +117,35 @@ const htmlToPlainText = (html: string): string => {
 }
 
 const getNestedHistory = (messagePart: MessagePart, level = 1): string => {
-  // First try to find text/plain content
+  let content = []
+
+  // Check if current part has text content
   if (messagePart.mimeType === 'text/plain' && messagePart.body?.data) {
     const { data } = decodedBody(messagePart.body)
-    if (!data) return ''
-    return data.split('\n').map(line => '>' + (line.startsWith('>') ? '' : ' ') + line).join('\n')
-  }
-
-  // If no text/plain, try text/html
-  if (messagePart.mimeType === 'text/html' && messagePart.body?.data) {
+    if (data) {
+      content.push(data.split('\n').map(line => '> ' + line).join('\n'))
+    }
+  } else if (messagePart.mimeType === 'text/html' && messagePart.body?.data) {
     const { data } = decodedBody(messagePart.body)
-    if (!data) return ''
-    const plainText = htmlToPlainText(data)
-    return plainText.split('\n').map(line => '>' + (line.startsWith('>') ? '' : ' ') + line).join('\n')
+    if (data) {
+      const plainText = htmlToPlainText(data)
+      content.push(plainText.split('\n').map(line => '> ' + line).join('\n'))
+    }
   }
 
-  // Recursively search through parts
+  // Recursively process nested parts to maintain quote hierarchy
   if (messagePart.parts && messagePart.parts.length > 0) {
-    // First try to find text/plain in any part
-    for (const part of messagePart.parts) {
-      if (part.mimeType === 'text/plain' && part.body?.data) {
-        const { data } = decodedBody(part.body)
-        if (data) {
-          return data.split('\n').map(line => '>' + (line.startsWith('>') ? '' : ' ') + line).join('\n')
-        }
-      }
+    const nestedContent = messagePart.parts
+      .map(part => getNestedHistory(part, level + 1))
+      .filter(text => text.trim())
+      .join('\n')
+    
+    if (nestedContent) {
+      content.push(nestedContent)
     }
-
-    // If no text/plain found, try text/html in any part
-    for (const part of messagePart.parts) {
-      if (part.mimeType === 'text/html' && part.body?.data) {
-        const { data } = decodedBody(part.body)
-        if (data) {
-          const plainText = htmlToPlainText(data)
-          return plainText.split('\n').map(line => '>' + (line.startsWith('>') ? '' : ' ') + line).join('\n')
-        }
-      }
-    }
-
-    // Recursively search nested parts
-    return messagePart.parts.map(p => getNestedHistory(p, level + 1)).filter(p => p).join('\n')
   }
 
-  return ''
+  return content.join('\n')
 }
 
 const findHeader = (headers: MessagePartHeader[] | undefined, name: string) => {
