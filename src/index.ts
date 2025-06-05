@@ -214,7 +214,10 @@ const getQuotedContent = (thread: Thread): { text: string, html?: string } => {
     const fromHeader = findHeader(lastMessage.payload.headers || [], 'from')
     const dateHeader = findHeader(lastMessage.payload.headers || [], 'date')
     if (fromHeader && dateHeader) {
-      quotedHtmlContent = `<div>On ${dateHeader} ${fromHeader} wrote:</div><br>${messageContent.html}`
+      // Extract email address from the from header (handle both "Name <email>" and "email" formats)
+      const emailMatch = fromHeader.match(/<([^>]+)>/)
+      const emailAddress = emailMatch ? emailMatch[1] : fromHeader
+      quotedHtmlContent = `<div>On ${dateHeader} &lt;${emailAddress}&gt; wrote:</div><br>${messageContent.html}`
     } else {
       quotedHtmlContent = messageContent.html
     }
