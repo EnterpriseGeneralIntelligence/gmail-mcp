@@ -274,7 +274,12 @@ const constructRawMessage = async (gmail, params) => {
     if (thread && thread.messages?.length) {
         const { to: replyToRecipients, cc: replyCcRecipients } = getReplyAllRecipients(thread, userEmail);
         // Merge explicitly provided recipients with those from reply-all logic
-        const toRecipients = params.to?.length ? params.to : replyToRecipients;
+        let toRecipients = [...(params.to || [])];
+        replyToRecipients.forEach(email => {
+            if (!toRecipients.includes(email)) {
+                toRecipients.push(email);
+            }
+        });
         if (toRecipients.length)
             message.push(`To: ${wrapTextBody(toRecipients.join(', '))}`);
         // Handle CC recipients - combine from thread reply-all and new params
