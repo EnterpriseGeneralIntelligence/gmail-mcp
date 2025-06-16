@@ -237,6 +237,32 @@ const sanitizeSubject = (subject) => {
         .replace(/\s+/g, ' ') // Replace multiple spaces with single space
         .trim();
 };
+const convertMarkdownToHtml = (text) => {
+    // First escape HTML entities
+    let html = text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    // Convert bold syntax: **text** or __text__
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+    // Convert italic syntax: *text* or _text_ (but not if part of bold)
+    // Use negative lookbehind and lookahead to avoid matching bold syntax
+    html = html.replace(/(?<!\*)\*(?!\*)([^*]+)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
+    html = html.replace(/(?<!_)_(?!_)([^_]+)(?<!_)_(?!_)/g, '<em>$1</em>');
+    // Convert line breaks to <br>
+    html = html.replace(/\n/g, '<br>');
+    return html;
+};
+const stripMarkdownToPlainText = (text) => {
+    // Remove bold syntax: **text** or __text__
+    let plainText = text.replace(/\*\*([^*]+)\*\*/g, '$1');
+    plainText = plainText.replace(/__([^_]+)__/g, '$1');
+    // Remove italic syntax: *text* or _text_
+    plainText = plainText.replace(/(?<!\*)\*(?!\*)([^*]+)(?<!\*)\*(?!\*)/g, '$1');
+    plainText = plainText.replace(/(?<!_)_(?!_)([^_]+)(?<!_)_(?!_)/g, '$1');
+    return plainText;
+};
 const wrapTextBody = (text) => text.split('\n').map(line => {
     if (line.length <= 76)
         return line;
@@ -348,9 +374,9 @@ const constructRawMessage = async (gmail, params) => {
     message.push('Content-Type: text/plain; charset="UTF-8"');
     message.push('Content-Transfer-Encoding: quoted-printable');
     message.push('');
-    // Add the body content
+    // Add the body content (strip markdown for plain text version)
     if (params.body)
-        message.push(wrapTextBody(params.body));
+        message.push(wrapTextBody(stripMarkdownToPlainText(params.body)));
     // Add quoted content for replies
     if (thread) {
         const quotedContent = getQuotedContent(thread);
@@ -365,15 +391,11 @@ const constructRawMessage = async (gmail, params) => {
     message.push('Content-Type: text/html; charset="UTF-8"');
     message.push('Content-Transfer-Encoding: quoted-printable');
     message.push('');
-    // Convert plain text to HTML with basic formatting
+    // Convert plain text to HTML with markdown formatting
     let htmlBody = '';
     if (params.body) {
-        // Simple conversion of plain text to HTML
-        htmlBody = params.body
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/\n/g, '<br>');
+        // Convert markdown syntax to HTML
+        htmlBody = convertMarkdownToHtml(params.body);
     }
     // Add HTML body with Gmail-compatible quoted content formatting
     message.push(`<!DOCTYPE html>
