@@ -143,7 +143,7 @@ const extractMessageContent = (messagePart: MessagePart): { text: string, html?:
     // Prefer text/plain over text/html for quoting
     const textPart = messagePart.parts.find(part => part.mimeType === 'text/plain')
     const htmlPart = messagePart.parts.find(part => part.mimeType === 'text/html')
-    
+
     if (textPart) {
       const textResult = extractMessageContent(textPart)
       if (textResult.text) textContent.push(textResult.text)
@@ -156,7 +156,7 @@ const extractMessageContent = (messagePart: MessagePart): { text: string, html?:
       const nestedResults = messagePart.parts
         .map(part => extractMessageContent(part))
         .filter(result => result.text.trim())
-      
+
       if (nestedResults.length > 0) {
         textContent.push(nestedResults.map(result => result.text).join('\n'))
         // Use the first HTML content found
@@ -283,6 +283,40 @@ const sanitizeSubject = (subject: string): string => {
     .trim()
 }
 
+const convertMarkdownToHtml = (text: string): string => {
+  // First escape HTML entities
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+
+  // Convert bold syntax: **text** or __text__
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>')
+
+  // Convert italic syntax: *text* or _text_ (but not if part of bold)
+  // Use negative lookbehind and lookahead to avoid matching bold syntax
+  html = html.replace(/(?<!\*)\*(?!\*)([^*]+)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+  html = html.replace(/(?<!_)_(?!_)([^_]+)(?<!_)_(?!_)/g, '<em>$1</em>')
+
+  // Convert line breaks to <br>
+  html = html.replace(/\n/g, '<br>')
+
+  return html
+}
+
+const stripMarkdownToPlainText = (text: string): string => {
+  // Remove bold syntax: **text** or __text__
+  let plainText = text.replace(/\*\*([^*]+)\*\*/g, '$1')
+  plainText = plainText.replace(/__([^_]+)__/g, '$1')
+
+  // Remove italic syntax: *text* or _text_
+  plainText = plainText.replace(/(?<!\*)\*(?!\*)([^*]+)(?<!\*)\*(?!\*)/g, '$1')
+  plainText = plainText.replace(/(?<!_)_(?!_)([^_]+)(?<!_)_(?!_)/g, '$1')
+
+  return plainText
+}
+
 const wrapTextBody = (text: string): string => text.split('\n').map(line => {
   if (line.length <= 76) return line
   const chunks = line.match(/.{1,76}/g) || []
@@ -401,8 +435,8 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   message.push('Content-Transfer-Encoding: quoted-printable')
   message.push('')
 
-  // Add the body content
-  if (params.body) message.push(wrapTextBody(params.body))
+  // Add the body content (strip markdown for plain text version)
+  if (params.body) message.push(wrapTextBody(stripMarkdownToPlainText(params.body)))
 
   // Add quoted content for replies
   if (thread) {
@@ -420,15 +454,11 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   message.push('Content-Transfer-Encoding: quoted-printable')
   message.push('')
 
-  // Convert plain text to HTML with basic formatting
+  // Convert plain text to HTML with markdown formatting
   let htmlBody = ''
   if (params.body) {
-    // Simple conversion of plain text to HTML
-    htmlBody = params.body
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/\n/g, '<br>')
+    // Convert markdown syntax to HTML
+    htmlBody = convertMarkdownToHtml(params.body)
   }
 
   // Add HTML body with Gmail-compatible quoted content formatting
@@ -452,10 +482,10 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
       // Fallback to text content if no HTML is available
       message.push(`  <blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex;">
     ${quotedContent.text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/\n/g, '<br>')}
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/\n/g, '<br>')}
   </blockquote>`)
     }
   }
