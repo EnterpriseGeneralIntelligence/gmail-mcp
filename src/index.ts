@@ -326,6 +326,7 @@ const wrapTextBody = (text: string): string => text.split('\n').map(line => {
 const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) => {
   let thread: Thread | null = null
   let userProfile: any = null
+  let validThreadId: string | undefined = undefined
 
   // Get user's email address for reply-all logic
   try {
@@ -342,9 +343,12 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
       const threadParams = { userId: 'me', id: params.threadId, format: 'full' }
       const { data } = await gmail.users.threads.get(threadParams)
       thread = data
+      // Only set validThreadId if the thread was successfully fetched
+      validThreadId = params.threadId
     } catch (error) {
       // If thread doesn't exist, ignore the threadId and create a new thread
       thread = null
+      validThreadId = undefined
     }
   }
 
@@ -496,7 +500,9 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   message.push('')
   message.push(`--${boundary}--`)
 
-  return Buffer.from(message.join('\r\n')).toString('base64url').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  const raw = Buffer.from(message.join('\r\n')).toString('base64url').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  
+  return { raw, validThreadId }
 }
 
 function createServer({ config }: { config?: Record<string, any> }) {
@@ -518,11 +524,12 @@ function createServer({ config }: { config?: Record<string, any> }) {
     },
     async (params) => {
       return handleTool(config, async (gmail: gmail_v1.Gmail) => {
-        const raw = await constructRawMessage(gmail, params)
+        const { raw, validThreadId } = await constructRawMessage(gmail, params)
 
         const draftCreateParams: DraftCreateParams = { userId: 'me', requestBody: { message: { raw } } }
-        if (params.threadId && draftCreateParams.requestBody?.message) {
-          draftCreateParams.requestBody.message.threadId = params.threadId
+        // Only set threadId if the thread was successfully validated
+        if (validThreadId && draftCreateParams.requestBody?.message) {
+          draftCreateParams.requestBody.message.threadId = validThreadId
         }
 
         const { data } = await gmail.users.drafts.create(draftCreateParams)
@@ -877,11 +884,12 @@ function createServer({ config }: { config?: Record<string, any> }) {
     },
     async (params) => {
       return handleTool(config, async (gmail: gmail_v1.Gmail) => {
-        const raw = await constructRawMessage(gmail, params)
+        const { raw, validThreadId } = await constructRawMessage(gmail, params)
 
         const messageSendParams: MessageSendParams = { userId: 'me', requestBody: { raw } }
-        if (params.threadId && messageSendParams.requestBody) {
-          messageSendParams.requestBody.threadId = params.threadId
+        // Only set threadId if the thread was successfully validated
+        if (validThreadId && messageSendParams.requestBody) {
+          messageSendParams.requestBody.threadId = validThreadId
         }
 
         const { data } = await gmail.users.messages.send(messageSendParams)
