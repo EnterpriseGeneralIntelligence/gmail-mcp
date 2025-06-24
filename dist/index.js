@@ -155,6 +155,26 @@ const extractEmailAddress = (emailString) => {
     const match = emailString.match(/<([^>]+)>/);
     return match ? match[1] : emailString.trim();
 };
+const validateEmailHeader = (emails) => {
+    return emails.filter(email => {
+        // Check for basic email validity and no problematic characters
+        const cleanEmail = email.trim();
+        if (!cleanEmail)
+            return false;
+        // Check for control characters, line breaks, or other problematic characters
+        if (/[\r\n\t\x00-\x1f\x7f-\x9f]/.test(cleanEmail)) {
+            logToFile('validateEmailHeader_invalid_chars', { email: cleanEmail, chars: cleanEmail.match(/[\r\n\t\x00-\x1f\x7f-\x9f]/g) });
+            return false;
+        }
+        // Basic email format check
+        const emailAddr = extractEmailAddress(cleanEmail);
+        const isValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailAddr);
+        if (!isValid) {
+            logToFile('validateEmailHeader_invalid_format', { email: cleanEmail, extractedEmail: emailAddr });
+        }
+        return isValid;
+    });
+};
 const getQuotedContent = (thread) => {
     if (!thread.messages?.length)
         return { text: '' };
@@ -340,8 +360,15 @@ const constructRawMessage = async (gmail, params) => {
                 ccEmails.add(emailAddr);
             }
         });
-        if (ccRecipients.length)
-            message.push(`Cc: ${wrapTextBody(ccRecipients.join(', '))}`);
+        // Extract just email addresses for CC header (no display names)
+        const ccEmailAddresses = ccRecipients.map(extractEmailAddress);
+        logToFile('constructRawMessage_cc_extracted', {
+            originalCcRecipients: ccRecipients,
+            extractedCcEmails: ccEmailAddresses,
+            ccCount: ccEmailAddresses.length
+        });
+        if (ccEmailAddresses.length)
+            message.push(`Cc: ${wrapTextBody(ccEmailAddresses.join(', '))}`);
         logToFile('constructRawMessage_final_recipients', {
             toCount: toRecipients.length,
             ccCount: ccRecipients.length,
@@ -357,16 +384,28 @@ const constructRawMessage = async (gmail, params) => {
         // For new messages, just use the provided recipients
         if (params.to?.length)
             message.push(`To: ${wrapTextBody(params.to.join(', '))}`);
-        if (params.cc?.length)
-            message.push(`Cc: ${wrapTextBody(params.cc.join(', '))}`);
+        if (params.cc?.length) {
+            // Extract just email addresses for CC header (no display names)
+            const ccEmailAddresses = params.cc.map(extractEmailAddress);
+            logToFile('constructRawMessage_new_message_cc_extracted', {
+                originalCc: params.cc,
+                extractedCcEmails: ccEmailAddresses
+            });
+            if (ccEmailAddresses.length)
+                message.push(`Cc: ${wrapTextBody(ccEmailAddresses.join(', '))}`);
+        }
     }
     // Handle BCC recipients
     if (params.bcc?.length) {
-        message.push(`Bcc: ${wrapTextBody(params.bcc.join(', '))}`);
-        logToFile('constructRawMessage_bcc', {
-            bccCount: params.bcc.length,
-            bccRecipients: params.bcc
+        // Extract just email addresses for BCC header (no display names)
+        const bccEmailAddresses = params.bcc.map(extractEmailAddress);
+        logToFile('constructRawMessage_bcc_extracted', {
+            originalBcc: params.bcc,
+            extractedBccEmails: bccEmailAddresses,
+            bccCount: bccEmailAddresses.length
         });
+        if (bccEmailAddresses.length)
+            message.push(`Bcc: ${wrapTextBody(bccEmailAddresses.join(', '))}`);
     }
     // Handle threading headers for proper conversation grouping
     let subjectHeader = '(No Subject)';
