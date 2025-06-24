@@ -7,7 +7,7 @@ import { z } from "zod"
 import { google, gmail_v1 } from 'googleapis'
 import fs from "fs"
 import { createOAuth2Client, launchAuthServer, validateCredentials } from "./oauth2.js"
-import { MCP_CONFIG_DIR, PORT } from "./config.js"
+import { MCP_CONFIG_DIR, PORT, LOG_FILE_PATH } from "./config.js"
 
 type Draft = gmail_v1.Schema$Draft
 type DraftCreateParams = gmail_v1.Params$Resource$Users$Drafts$Create
@@ -47,22 +47,24 @@ const defaultGmailClient = defaultOAuth2Client ? google.gmail({ version: 'v1', a
 
 const formatResponse = (response: any) => ({ content: [{ type: "text", text: JSON.stringify(response) }] })
 
+const logToFile = (message: string, data: any) => {
+  const timestamp = new Date().toISOString()
+  const logEntry = `[${timestamp}] ${message}: ${JSON.stringify(data)}\n`
+  fs.appendFileSync(LOG_FILE_PATH, logEntry)
+}
+
 const handleTool = async (queryConfig: Record<string, any> | undefined, apiCall: (gmail: gmail_v1.Gmail) => Promise<any>) => {
-  try {
-    const oauth2Client = queryConfig ? createOAuth2Client(queryConfig) : defaultOAuth2Client
-    if (!oauth2Client) throw new Error('OAuth2 client could not be created, please check your credentials')
+  const oauth2Client = queryConfig ? createOAuth2Client(queryConfig) : defaultOAuth2Client
+  if (!oauth2Client) throw new Error('OAuth2 client could not be created, please check your credentials')
 
-    const credentialsAreValid = await validateCredentials(oauth2Client)
-    if (!credentialsAreValid) throw new Error('OAuth2 credentials are invalid, please re-authenticate')
+  const credentialsAreValid = await validateCredentials(oauth2Client)
+  if (!credentialsAreValid) throw new Error('OAuth2 credentials are invalid, please re-authenticate')
 
-    const gmailClient = queryConfig ? google.gmail({ version: 'v1', auth: oauth2Client }) : defaultGmailClient
-    if (!gmailClient) throw new Error('Gmail client could not be created, please check your credentials')
+  const gmailClient = queryConfig ? google.gmail({ version: 'v1', auth: oauth2Client }) : defaultGmailClient
+  if (!gmailClient) throw new Error('Gmail client could not be created, please check your credentials')
 
-    const result = await apiCall(gmailClient)
-    return result
-  } catch (error: any) {
-    return `Tool execution failed: ${error.message}`
-  }
+  const result = await apiCall(gmailClient)
+  return result
 }
 
 const decodedBody = (body: MessagePartBody) => {
@@ -181,6 +183,12 @@ const findHeader = (headers: MessagePartHeader[] | undefined, name: string) => {
 const formatEmailList = (emailList: string | null | undefined) => {
   if (!emailList) return []
   return emailList.split(',').map(email => email.trim())
+}
+
+const extractEmailAddress = (emailString: string): string => {
+  // Extract email from "Name <email>" format or just return the email if it's plain
+  const match = emailString.match(/<([^>]+)>/)
+  return match ? match[1] : emailString.trim()
 }
 
 const getQuotedContent = (thread: Thread): { text: string, html?: string } => {
@@ -324,6 +332,8 @@ const wrapTextBody = (text: string): string => text.split('\n').map(line => {
 }).join('\n')
 
 const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) => {
+  logToFile('constructRawMessage_start', { params: { ...params, body: params.body ? params.body.substring(0, 100) + (params.body.length > 100 ? '...' : '') : undefined } })
+
   let thread: Thread | null = null
   let userProfile: any = null
   let validThreadId: string | undefined = undefined
@@ -332,6 +342,7 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   try {
     const profileResponse = await gmail.users.getProfile({ userId: 'me' })
     userProfile = profileResponse.data
+    logToFile('constructRawMessage_profile', { emailAddress: userProfile?.emailAddress })
   } catch (error) {
     console.error('Failed to get user profile:', error)
   }
@@ -339,12 +350,14 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   const userEmail = userProfile?.emailAddress || ''
 
   if (params.threadId) {
+    logToFile('constructRawMessage_thread_lookup', { threadId: params.threadId })
     try {
       const threadParams = { userId: 'me', id: params.threadId, format: 'full' }
       const { data } = await gmail.users.threads.get(threadParams)
       thread = data
       // Only set validThreadId if the thread was successfully fetched
       validThreadId = params.threadId
+      logToFile('constructRawMessage_thread_found', { threadId: validThreadId, messageCount: thread?.messages?.length })
     } catch (error) {
       // If thread doesn't exist, ignore the threadId and create a new thread
       thread = null
@@ -354,53 +367,85 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
 
   // Generate a boundary string for multipart messages
   const boundary = `boundary_${Date.now().toString(16)}`
+  logToFile('constructRawMessage_boundary', { boundary })
 
   // Start building the message headers
   const message = []
 
   // For replies to threads, implement reply-all behavior
   if (thread && thread.messages?.length) {
+    logToFile('constructRawMessage_reply_mode', { threadId: validThreadId })
     const { to: replyToRecipients, cc: replyCcRecipients } = getReplyAllRecipients(thread, userEmail)
+    logToFile('constructRawMessage_reply_recipients', {
+      replyToRecipients: replyToRecipients.length,
+      replyCcRecipients: replyCcRecipients.length
+    })
 
     // Merge explicitly provided recipients with those from reply-all logic
     let toRecipients: string[] = [...(params.to || [])]
+    const toEmails = new Set(toRecipients.map(extractEmailAddress))
     replyToRecipients.forEach(email => {
-      if (!toRecipients.includes(email)) {
+      const emailAddr = extractEmailAddress(email)
+      if (!toEmails.has(emailAddr)) {
         toRecipients.push(email)
+        toEmails.add(emailAddr)
       }
     })
     if (toRecipients.length) message.push(`To: ${wrapTextBody(toRecipients.join(', '))}`)
 
     // Handle CC recipients - combine from thread reply-all and new params
     let ccRecipients: string[] = [...(params.cc || [])]
+    const ccEmails = new Set(ccRecipients.map(extractEmailAddress))
     replyCcRecipients.forEach(email => {
-      if (!ccRecipients.includes(email)) {
+      const emailAddr = extractEmailAddress(email)
+      if (!ccEmails.has(emailAddr)) {
         ccRecipients.push(email)
+        ccEmails.add(emailAddr)
       }
     })
     if (ccRecipients.length) message.push(`Cc: ${wrapTextBody(ccRecipients.join(', '))}`)
+
+    logToFile('constructRawMessage_final_recipients', {
+      toCount: toRecipients.length,
+      ccCount: ccRecipients.length,
+      ccRecipients: ccRecipients
+    })
   } else {
+    logToFile('constructRawMessage_new_message_mode', {
+      toCount: params.to?.length || 0,
+      ccCount: params.cc?.length || 0,
+      ccRecipients: params.cc || []
+    })
     // For new messages, just use the provided recipients
     if (params.to?.length) message.push(`To: ${wrapTextBody(params.to.join(', '))}`)
     if (params.cc?.length) message.push(`Cc: ${wrapTextBody(params.cc.join(', '))}`)
   }
 
   // Handle BCC recipients
-  if (params.bcc?.length) message.push(`Bcc: ${wrapTextBody(params.bcc.join(', '))}`)
+  if (params.bcc?.length) {
+    message.push(`Bcc: ${wrapTextBody(params.bcc.join(', '))}`)
+    logToFile('constructRawMessage_bcc', {
+      bccCount: params.bcc.length,
+      bccRecipients: params.bcc
+    })
+  }
 
   // Handle threading headers for proper conversation grouping
   let subjectHeader = '(No Subject)'
   if (thread && thread.messages?.length) {
+    logToFile('constructRawMessage_threading_headers', { messageCount: thread.messages.length })
     // Get the first message in the thread to extract headers
     const firstMessage = thread.messages[0];
     const lastMessage = thread.messages[thread.messages.length - 1];
 
     // Add subject with Re: prefix if needed
     subjectHeader = findHeader(lastMessage.payload?.headers || [], 'subject') || params.subject || '(No Subject)';
+    const originalSubject = subjectHeader;
     if (subjectHeader && !subjectHeader.toLowerCase().startsWith('re:')) {
       subjectHeader = `Re: ${subjectHeader}`;
     }
     message.push(`Subject: ${wrapTextBody(sanitizeSubject(subjectHeader))}`);
+    logToFile('constructRawMessage_subject', { originalSubject, finalSubject: subjectHeader })
 
     // Add critical threading headers
     const references: string[] = [];
@@ -415,17 +460,21 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
     const lastMessageId = findHeader(lastMessage.payload?.headers || [], 'message-id');
     if (lastMessageId) {
       message.push(`In-Reply-To: ${lastMessageId}`);
+      logToFile('constructRawMessage_in_reply_to', { lastMessageId })
     }
 
     // Add References header with all message IDs in the thread
     if (references.length > 0) {
       message.push(`References: ${references.join(' ')}`);
+      logToFile('constructRawMessage_references', { referenceCount: references.length })
     }
   } else if (params.subject) {
     subjectHeader = params.subject
     message.push(`Subject: ${wrapTextBody(sanitizeSubject(params.subject))}`)
+    logToFile('constructRawMessage_new_subject', { subject: params.subject })
   } else {
     message.push('Subject: (No Subject)')
+    logToFile('constructRawMessage_no_subject', {})
   }
 
   // Set up multipart MIME message
@@ -433,6 +482,7 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   message.push(`Content-Type: multipart/alternative; boundary=${boundary}`)
   message.push('')
   message.push(`--${boundary}`)
+  logToFile('constructRawMessage_mime_setup', { boundary })
 
   // Add text/plain part
   message.push('Content-Type: text/plain; charset="UTF-8"')
@@ -440,7 +490,11 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   message.push('')
 
   // Add the body content (strip markdown for plain text version)
-  if (params.body) message.push(wrapTextBody(stripMarkdownToPlainText(params.body)))
+  if (params.body) {
+    const plainTextBody = stripMarkdownToPlainText(params.body)
+    message.push(wrapTextBody(plainTextBody))
+    logToFile('constructRawMessage_plain_text_body', { bodyLength: plainTextBody.length })
+  }
 
   // Add quoted content for replies
   if (thread) {
@@ -448,6 +502,7 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
     if (quotedContent.text) {
       message.push('')
       message.push(wrapTextBody(quotedContent.text))
+      logToFile('constructRawMessage_quoted_content_text', { quotedLength: quotedContent.text.length })
     }
   }
 
@@ -457,12 +512,14 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   message.push('Content-Type: text/html; charset="UTF-8"')
   message.push('Content-Transfer-Encoding: quoted-printable')
   message.push('')
+  logToFile('constructRawMessage_html_part_start', {})
 
   // Convert plain text to HTML with markdown formatting
   let htmlBody = ''
   if (params.body) {
     // Convert markdown syntax to HTML
     htmlBody = convertMarkdownToHtml(params.body)
+    logToFile('constructRawMessage_html_body', { htmlLength: htmlBody.length })
   }
 
   // Add HTML body with Gmail-compatible quoted content formatting
@@ -482,6 +539,7 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
       message.push(`  <blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex;">
     ${quotedContent.html}
   </blockquote>`)
+      logToFile('constructRawMessage_quoted_content_html', { htmlQuotedLength: quotedContent.html.length })
     } else if (quotedContent.text) {
       // Fallback to text content if no HTML is available
       message.push(`  <blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex;">
@@ -491,6 +549,7 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
           .replace(/>/g, '&gt;')
           .replace(/\n/g, '<br>')}
   </blockquote>`)
+      logToFile('constructRawMessage_quoted_content_text_fallback', { textQuotedLength: quotedContent.text.length })
     }
   }
 
@@ -501,7 +560,12 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   message.push(`--${boundary}--`)
 
   const raw = Buffer.from(message.join('\r\n')).toString('base64url').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-  
+  logToFile('constructRawMessage_complete', {
+    rawLength: raw.length,
+    messagePartsCount: message.length,
+    validThreadId
+  })
+
   return { raw, validThreadId }
 }
 
@@ -524,6 +588,16 @@ function createServer({ config }: { config?: Record<string, any> }) {
     },
     async (params) => {
       return handleTool(config, async (gmail: gmail_v1.Gmail) => {
+        // Log the create_draft request
+        logToFile('create_draft', {
+          threadId: params.threadId,
+          to: params.to,
+          cc: params.cc,
+          bcc: params.bcc,
+          subject: params.subject,
+          body: params.body ? params.body.substring(0, 100) + (params.body.length > 100 ? '...' : '') : undefined
+        })
+
         const { raw, validThreadId } = await constructRawMessage(gmail, params)
 
         const draftCreateParams: DraftCreateParams = { userId: 'me', requestBody: { message: { raw } } }
@@ -884,6 +958,16 @@ function createServer({ config }: { config?: Record<string, any> }) {
     },
     async (params) => {
       return handleTool(config, async (gmail: gmail_v1.Gmail) => {
+        // Log the send_message request
+        logToFile('send_message', {
+          threadId: params.threadId,
+          to: params.to,
+          cc: params.cc,
+          bcc: params.bcc,
+          subject: params.subject,
+          body: params.body ? params.body.substring(0, 100) + (params.body.length > 100 ? '...' : '') : undefined
+        })
+
         const { raw, validThreadId } = await constructRawMessage(gmail, params)
 
         const messageSendParams: MessageSendParams = { userId: 'me', requestBody: { raw } }
