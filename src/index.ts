@@ -427,14 +427,21 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
     })
     
     // Extract just email addresses for CC header (no display names)
+    const toEmailAddresses = toRecipients.map(extractEmailAddress)
     const ccEmailAddresses = ccRecipients.map(extractEmailAddress)
+    
+    // Remove CC recipients that are already in TO
+    const filteredCcEmails = ccEmailAddresses.filter(ccEmail => !toEmailAddresses.includes(ccEmail))
+    
     logToFile('constructRawMessage_cc_extracted', { 
       originalCcRecipients: ccRecipients,
       extractedCcEmails: ccEmailAddresses,
-      ccCount: ccEmailAddresses.length 
+      toEmails: toEmailAddresses,
+      filteredCcEmails: filteredCcEmails,
+      ccCount: filteredCcEmails.length 
     })
     
-    if (ccEmailAddresses.length) message.push(`Cc: ${wrapTextBody(ccEmailAddresses.join(', '))}`)
+    if (filteredCcEmails.length) message.push(`Cc: ${wrapTextBody(filteredCcEmails.join(', '))}`)
 
     logToFile('constructRawMessage_final_recipients', {
       toCount: toRecipients.length,
@@ -451,12 +458,19 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
     if (params.to?.length) message.push(`To: ${wrapTextBody(params.to.join(', '))}`)
     if (params.cc?.length) {
       // Extract just email addresses for CC header (no display names)
+      const toEmailAddresses = (params.to || []).map(extractEmailAddress)
       const ccEmailAddresses = params.cc.map(extractEmailAddress)
+      
+      // Remove CC recipients that are already in TO
+      const filteredCcEmails = ccEmailAddresses.filter(ccEmail => !toEmailAddresses.includes(ccEmail))
+      
       logToFile('constructRawMessage_new_message_cc_extracted', { 
         originalCc: params.cc,
-        extractedCcEmails: ccEmailAddresses 
+        extractedCcEmails: ccEmailAddresses,
+        toEmails: toEmailAddresses,
+        filteredCcEmails: filteredCcEmails
       })
-      if (ccEmailAddresses.length) message.push(`Cc: ${wrapTextBody(ccEmailAddresses.join(', '))}`)
+      if (filteredCcEmails.length) message.push(`Cc: ${wrapTextBody(filteredCcEmails.join(', '))}`)
     }
   }
 
