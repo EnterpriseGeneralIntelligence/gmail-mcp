@@ -314,11 +314,61 @@ const sanitizeSubject = (subject: string): string => {
 }
 
 const convertMarkdownToHtml = (text: string): string => {
-  // First escape HTML entities
   let html = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
+  
+  logToFile('convertMarkdownToHtml_start', { 
+    input: text 
+  })
+
+  // Convert markdown links FIRST before escaping HTML entities
+  // This ensures the generated HTML tags are not escaped
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, linkText, url) => {
+    // Clean and prepare the URL
+    const cleanUrl = url.trim()
+    
+    // Ensure the URL has a protocol (for Gmail compatibility)
+    let finalUrl = cleanUrl
+    if (!cleanUrl.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:/)) {
+      // If no protocol, assume https://
+      finalUrl = 'https://' + cleanUrl
+    }
+    
+    // Escape HTML entities in the link text only
+    const escapedLinkText = linkText
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+    
+    // Return the HTML link with properly encoded URL
+    const result = `<a href="${encodeURI(finalUrl)}" target="_blank">${escapedLinkText}</a>`
+    
+    logToFile('convertMarkdownToHtml_link', {
+      match,
+      linkText,
+      url,
+      cleanUrl,
+      finalUrl,
+      escapedLinkText,
+      result
+    })
+    
+    return result
+  })
+
+  // Now escape HTML entities in the remaining text (not inside HTML tags)
+  // This regex matches text outside of HTML tags
+  html = html.replace(/([^<>]+)(?=<|$)/g, (match) => {
+    // Skip if this is inside an HTML tag
+    if (match.includes('href=') || match.includes('target=')) {
+      return match
+    }
+    return match
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+  })
 
   // Convert bold syntax: **text** or __text__
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
@@ -331,13 +381,20 @@ const convertMarkdownToHtml = (text: string): string => {
 
   // Convert line breaks to <br>
   html = html.replace(/\n/g, '<br>')
+  
+  logToFile('convertMarkdownToHtml_final', { 
+    output: html 
+  })
 
   return html
 }
 
 const stripMarkdownToPlainText = (text: string): string => {
+  // Remove markdown links: [text](url) -> text
+  let plainText = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+
   // Remove bold syntax: **text** or __text__
-  let plainText = text.replace(/\*\*([^*]+)\*\*/g, '$1')
+  plainText = plainText.replace(/\*\*([^*]+)\*\*/g, '$1')
   plainText = plainText.replace(/__([^_]+)__/g, '$1')
 
   // Remove italic syntax: *text* or _text_
@@ -347,11 +404,43 @@ const stripMarkdownToPlainText = (text: string): string => {
   return plainText
 }
 
-const wrapTextBody = (text: string): string => text.split('\n').map(line => {
-  if (line.length <= 76) return line
-  const chunks = line.match(/.{1,76}/g) || []
-  return chunks.join('=\n')
-}).join('\n')
+const wrapTextBody = (text: string): string => {
+  // For quoted-printable encoding, we need to:
+  // 1. Encode = character first
+  // 2. Then encode other special characters
+  // 3. Wrap lines at 76 characters
+  
+  let encoded = text
+    // First encode the = character
+    .replace(/=/g, '=3D')
+    // Then encode other non-printable characters
+    .replace(/([^\x09\x20-\x7E])/g, (char) => {
+      const hex = char.charCodeAt(0).toString(16).toUpperCase()
+      return '=' + (hex.length < 2 ? '0' + hex : hex)
+    })
+    
+  // Wrap lines at 76 characters for quoted-printable
+  return encoded.split('\n').map(line => {
+    if (line.length <= 76) return line
+    
+    const chunks = []
+    let currentChunk = ''
+    
+    for (let i = 0; i < line.length; i++) {
+      currentChunk += line[i]
+      // Don't break in the middle of an encoded sequence (=XX)
+      if (currentChunk.length >= 73 && line[i] !== '=' && 
+          !(i > 0 && line[i-1] === '=') && 
+          !(i > 1 && line[i-2] === '=')) {
+        chunks.push(currentChunk + '=')
+        currentChunk = ''
+      }
+    }
+    
+    if (currentChunk) chunks.push(currentChunk)
+    return chunks.join('\n')
+  }).join('\n')
+}
 
 const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) => {
   logToFile('constructRawMessage_start', { params: { ...params, body: params.body ? params.body.substring(0, 100) + (params.body.length > 100 ? '...' : '') : undefined } })
@@ -575,17 +664,24 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   if (params.body) {
     // Convert markdown syntax to HTML
     htmlBody = convertMarkdownToHtml(params.body)
-    logToFile('constructRawMessage_html_body', { htmlLength: htmlBody.length })
+    logToFile('constructRawMessage_html_body', { 
+      htmlLength: htmlBody.length,
+      originalBody: params.body,
+      convertedHtml: htmlBody
+    })
   }
 
   // Add HTML body with Gmail-compatible quoted content formatting
-  message.push(`<!DOCTYPE html>
+  // Wrap the entire HTML content for quoted-printable encoding
+  const htmlContent = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
 </head>
 <body>
-  <div>${htmlBody}</div>`)
+  <div>${htmlBody}</div>`
+  
+  message.push(wrapTextBody(htmlContent))
 
   // Add quoted content in Gmail's native collapsible format
   if (thread) {
@@ -609,17 +705,25 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
     }
   }
 
-  message.push('</body></html>')
+  const htmlClosing = '</body></html>'
+  message.push(wrapTextBody(htmlClosing))
 
   // Close the multipart message
   message.push('')
   message.push(`--${boundary}--`)
 
-  const raw = Buffer.from(message.join('\r\n')).toString('base64url').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  const fullMessage = message.join('\r\n')
+  const raw = Buffer.from(fullMessage).toString('base64url').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  
   logToFile('constructRawMessage_complete', {
     rawLength: raw.length,
     messagePartsCount: message.length,
-    validThreadId
+    validThreadId,
+    // Log a portion of the HTML part for debugging
+    htmlPart: fullMessage.substring(
+      fullMessage.indexOf('Content-Type: text/html'),
+      fullMessage.indexOf('Content-Type: text/html') + 500
+    )
   })
 
   return { raw, validThreadId }
