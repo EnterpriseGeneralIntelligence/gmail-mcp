@@ -406,18 +406,29 @@ const stripMarkdownToPlainText = (text: string): string => {
 
 const wrapTextBody = (text: string): string => {
   // For quoted-printable encoding, we need to:
-  // 1. Encode = character first
-  // 2. Then encode other special characters
-  // 3. Wrap lines at 76 characters
+  // 1. Convert string to UTF-8 bytes
+  // 2. Encode = character first
+  // 3. Then encode other special characters
+  // 4. Wrap lines at 76 characters
   
-  let encoded = text
-    // First encode the = character
-    .replace(/=/g, '=3D')
-    // Then encode other non-printable characters
-    .replace(/([^\x09\x20-\x7E])/g, (char) => {
-      const hex = char.charCodeAt(0).toString(16).toUpperCase()
-      return '=' + (hex.length < 2 ? '0' + hex : hex)
-    })
+  // Convert string to UTF-8 bytes
+  const utf8Bytes = Buffer.from(text, 'utf8')
+  
+  let encoded = ''
+  for (let i = 0; i < utf8Bytes.length; i++) {
+    const byte = utf8Bytes[i]
+    
+    // Check if byte needs encoding
+    if (byte === 0x3D) { // = character
+      encoded += '=3D'
+    } else if (byte === 0x09 || (byte >= 0x20 && byte <= 0x7E)) { // Tab or printable ASCII
+      encoded += String.fromCharCode(byte)
+    } else {
+      // Encode as =XX
+      const hex = byte.toString(16).toUpperCase()
+      encoded += '=' + (hex.length < 2 ? '0' + hex : hex)
+    }
+  }
     
   // Wrap lines at 76 characters for quoted-printable
   return encoded.split('\n').map(line => {
