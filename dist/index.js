@@ -263,10 +263,11 @@ const sanitizeSubject = (subject) => {
         .replace(/\s+/g, ' ') // Replace multiple spaces with single space
         .trim();
 };
-const convertMarkdownToHtml = (text) => {
+const convertMarkdownToHtml = (text, tracking_click_link) => {
     let html = text;
     logToFile('convertMarkdownToHtml_start', {
-        input: text
+        input: text,
+        tracking_click_link
     });
     // Convert markdown links FIRST before escaping HTML entities
     // This ensures the generated HTML tags are not escaped
@@ -279,6 +280,11 @@ const convertMarkdownToHtml = (text) => {
             // If no protocol, assume https://
             finalUrl = 'https://' + cleanUrl;
         }
+        // Apply click tracking if provided
+        if (tracking_click_link) {
+            const encodedOriginalUrl = encodeURIComponent(finalUrl);
+            finalUrl = `${tracking_click_link}?url=${encodedOriginalUrl}`;
+        }
         // Escape HTML entities in the link text only
         const escapedLinkText = linkText
             .replace(/&/g, '&amp;')
@@ -287,7 +293,9 @@ const convertMarkdownToHtml = (text) => {
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
         // Return the HTML link with properly encoded URL
-        const result = `<a href="${encodeURI(finalUrl)}" target="_blank">${escapedLinkText}</a>`;
+        // Don't encode again if we've already applied tracking (which includes encoding)
+        const href = tracking_click_link ? finalUrl : encodeURI(finalUrl);
+        const result = `<a href="${href}" target="_blank">${escapedLinkText}</a>`;
         logToFile('convertMarkdownToHtml_link', {
             match,
             linkText,
@@ -295,7 +303,8 @@ const convertMarkdownToHtml = (text) => {
             cleanUrl,
             finalUrl,
             escapedLinkText,
-            result
+            result,
+            tracking_applied: !!tracking_click_link
         });
         return result;
     });
@@ -320,6 +329,46 @@ const convertMarkdownToHtml = (text) => {
     html = html.replace(/(?<!_)_(?!_)([^_]+)(?<!_)_(?!_)/g, '<em>$1</em>');
     // Convert line breaks to <br>
     html = html.replace(/\n/g, '<br>');
+    // Apply click tracking to existing HTML links if tracking_click_link is provided
+    if (tracking_click_link) {
+        html = html.replace(/<a\s+([^>]*?)href=["']([^"']+)["']([^>]*?)>/gi, (match, preHref, url, postHref) => {
+            // Skip if this is already a tracking link
+            if (url.includes(tracking_click_link)) {
+                return match;
+            }
+            const encodedOriginalUrl = encodeURIComponent(url);
+            const trackedUrl = `${tracking_click_link}?url=${encodedOriginalUrl}`;
+            logToFile('convertMarkdownToHtml_existing_link_tracked', {
+                originalUrl: url,
+                trackedUrl,
+                match
+            });
+            return `<a ${preHref}href="${trackedUrl}"${postHref}>`;
+        });
+    }
+    // Apply click tracking to plain URLs if tracking_click_link is provided
+    if (tracking_click_link) {
+        // Match URLs that are not already inside HTML tags or markdown links
+        // This handles both https?:// URLs and www. URLs
+        html = html.replace(/(?<!href=["']|href=)\b((?:https?:\/\/|www\.)[^\s<>"']+)/gi, (match, url) => {
+            // Skip if this URL is already inside an HTML tag (like <a href=...)
+            // This regex looks for URLs that are not preceded by href= 
+            // Add https:// protocol if the URL starts with www.
+            let finalUrl = url;
+            if (url.startsWith('www.')) {
+                finalUrl = 'https://' + url;
+            }
+            const encodedOriginalUrl = encodeURIComponent(finalUrl);
+            const trackedUrl = `${tracking_click_link}?url=${encodedOriginalUrl}`;
+            logToFile('convertMarkdownToHtml_plain_url_tracked', {
+                originalUrl: url,
+                finalUrl,
+                trackedUrl,
+                match
+            });
+            return `<a href="${trackedUrl}" target="_blank">${url}</a>`;
+        });
+    }
     logToFile('convertMarkdownToHtml_final', {
         output: html
     });
@@ -545,47 +594,57 @@ const constructRawMessage = async (gmail, params) => {
     let htmlBody = '';
     if (params.body) {
         // Convert markdown syntax to HTML
-        htmlBody = convertMarkdownToHtml(params.body);
+        htmlBody = convertMarkdownToHtml(params.body, params.tracking_click_link);
         logToFile('constructRawMessage_html_body', {
             htmlLength: htmlBody.length,
             originalBody: params.body,
-            convertedHtml: htmlBody
+            convertedHtml: htmlBody,
+            tracking_click_link: params.tracking_click_link
         });
     }
     // Add HTML body with Gmail-compatible quoted content formatting
     // Wrap the entire HTML content for quoted-printable encoding
-    const htmlContent = `<!DOCTYPE html>
+    let htmlContent = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
 </head>
 <body>
   <div>${htmlBody}</div>`;
-    message.push(wrapTextBody(htmlContent));
     // Add quoted content in Gmail's native collapsible format
     if (thread) {
         const quotedContent = getQuotedContent(thread);
         if (quotedContent.html) {
             // For HTML content, wrap it directly in blockquote without converting to text
-            message.push(`  <blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex;">
+            htmlContent += `
+  <blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex;">
     ${quotedContent.html}
-  </blockquote>`);
+  </blockquote>`;
             logToFile('constructRawMessage_quoted_content_html', { htmlQuotedLength: quotedContent.html.length });
         }
         else if (quotedContent.text) {
             // Fallback to text content if no HTML is available
-            message.push(`  <blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex;">
+            htmlContent += `
+  <blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex;">
     ${quotedContent.text
                 .replace(/&/g, '&amp;')
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;')
                 .replace(/\n/g, '<br>')}
-  </blockquote>`);
+  </blockquote>`;
             logToFile('constructRawMessage_quoted_content_text_fallback', { textQuotedLength: quotedContent.text.length });
         }
     }
-    const htmlClosing = '</body></html>';
-    message.push(wrapTextBody(htmlClosing));
+    // Add tracking image if provided
+    if (params.tracking_open_link) {
+        htmlContent += `
+  <img src="${params.tracking_open_link}" alt="" style="width:1px;height:1px;border:0;display:none;" />`;
+        logToFile('constructRawMessage_tracking_image', {
+            tracking_open_link: params.tracking_open_link
+        });
+    }
+    htmlContent += '</body></html>';
+    message.push(wrapTextBody(htmlContent));
     // Close the multipart message
     message.push('');
     message.push(`--${boundary}--`);
@@ -612,7 +671,9 @@ function createServer({ config }) {
         cc: z.array(z.string()).optional().describe("List of CC recipient email addresses"),
         bcc: z.array(z.string()).optional().describe("List of BCC recipient email addresses"),
         subject: z.string().optional().describe("The subject of the email"),
-        body: z.string().optional().describe("The body of the email")
+        body: z.string().optional().describe("The body of the email"),
+        tracking_open_link: z.string().optional().describe("URL for tracking email opens - embeds invisible image with this src"),
+        tracking_click_link: z.string().optional().describe("Base URL for tracking clicks - replaces all links with this URL + encoded original URL")
     }, async (params) => {
         return handleTool(config, async (gmail) => {
             // Log the create_draft request
@@ -875,7 +936,9 @@ function createServer({ config }) {
         cc: z.array(z.string()).optional().describe("List of CC recipient email addresses"),
         bcc: z.array(z.string()).optional().describe("List of BCC recipient email addresses"),
         subject: z.string().optional().describe("The subject of the email"),
-        body: z.string().optional().describe("The body of the email")
+        body: z.string().optional().describe("The body of the email"),
+        tracking_open_link: z.string().optional().describe("URL for tracking email opens - embeds invisible image with this src"),
+        tracking_click_link: z.string().optional().describe("Base URL for tracking clicks - replaces all links with this URL + encoded original URL")
     }, async (params) => {
         return handleTool(config, async (gmail) => {
             // Log the send_message request
