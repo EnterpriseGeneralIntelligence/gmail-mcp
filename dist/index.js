@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { google } from 'googleapis';
 import fs from "fs";
+import * as quotedPrintable from 'quoted-printable';
 import { createOAuth2Client, launchAuthServer, validateCredentials } from "./oauth2.js";
 import { MCP_CONFIG_DIR, LOG_FILE_PATH } from "./config.js";
 const RESPONSE_HEADERS_LIST = [
@@ -336,38 +337,10 @@ const stripMarkdownToPlainText = (text) => {
     return plainText;
 };
 const wrapTextBody = (text) => {
-    // For quoted-printable encoding, we need to:
-    // 1. Encode = character first
-    // 2. Then encode other special characters
-    // 3. Wrap lines at 76 characters
-    let encoded = text
-        // First encode the = character
-        .replace(/=/g, '=3D')
-        // Then encode other non-printable characters
-        .replace(/([^\x09\x20-\x7E])/g, (char) => {
-        const hex = char.charCodeAt(0).toString(16).toUpperCase();
-        return '=' + (hex.length < 2 ? '0' + hex : hex);
-    });
-    // Wrap lines at 76 characters for quoted-printable
-    return encoded.split('\n').map(line => {
-        if (line.length <= 76)
-            return line;
-        const chunks = [];
-        let currentChunk = '';
-        for (let i = 0; i < line.length; i++) {
-            currentChunk += line[i];
-            // Don't break in the middle of an encoded sequence (=XX)
-            if (currentChunk.length >= 73 && line[i] !== '=' &&
-                !(i > 0 && line[i - 1] === '=') &&
-                !(i > 1 && line[i - 2] === '=')) {
-                chunks.push(currentChunk + '=');
-                currentChunk = '';
-            }
-        }
-        if (currentChunk)
-            chunks.push(currentChunk);
-        return chunks.join('\n');
-    }).join('\n');
+    // First convert to UTF-8 bytes, then to latin1 string for quoted-printable
+    const utf8Buffer = Buffer.from(text, 'utf8');
+    const latin1String = utf8Buffer.toString('latin1');
+    return quotedPrintable.encode(latin1String);
 };
 const constructRawMessage = async (gmail, params) => {
     logToFile('constructRawMessage_start', { params: { ...params, body: params.body ? params.body.substring(0, 100) + (params.body.length > 100 ? '...' : '') : undefined } });
