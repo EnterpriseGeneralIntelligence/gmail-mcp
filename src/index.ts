@@ -6,7 +6,7 @@ import { createStatelessServer } from "@smithery/sdk/server/stateless.js"
 import { z } from "zod"
 import { google, gmail_v1 } from 'googleapis'
 import fs from "fs"
-import * as quotedPrintable from 'quoted-printable'
+import quotedPrintable from 'quoted-printable'
 import { createOAuth2Client, launchAuthServer, validateCredentials } from "./oauth2.js"
 import { MCP_CONFIG_DIR, PORT, LOG_FILE_PATH } from "./config.js"
 
@@ -405,7 +405,7 @@ const stripMarkdownToPlainText = (text: string): string => {
   return plainText
 }
 
-const wrapTextBody = (text: string): string => {
+export const wrapTextBody = (text: string): string => {
   // First convert to UTF-8 bytes, then to latin1 string for quoted-printable
   const utf8Buffer = Buffer.from(text, 'utf8')
   const latin1String = utf8Buffer.toString('latin1')

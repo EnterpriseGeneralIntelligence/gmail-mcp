@@ -4,7 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { google } from 'googleapis';
 import fs from "fs";
-import * as quotedPrintable from 'quoted-printable';
+import quotedPrintable from 'quoted-printable';
 import { createOAuth2Client, launchAuthServer, validateCredentials } from "./oauth2.js";
 import { MCP_CONFIG_DIR, LOG_FILE_PATH } from "./config.js";
 const RESPONSE_HEADERS_LIST = [
@@ -336,7 +336,7 @@ const stripMarkdownToPlainText = (text) => {
     plainText = plainText.replace(/(?<!_)_(?!_)([^_]+)(?<!_)_(?!_)/g, '$1');
     return plainText;
 };
-const wrapTextBody = (text) => {
+export const wrapTextBody = (text) => {
     // First convert to UTF-8 bytes, then to latin1 string for quoted-printable
     const utf8Buffer = Buffer.from(text, 'utf8');
     const latin1String = utf8Buffer.toString('latin1');
