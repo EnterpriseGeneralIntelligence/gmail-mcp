@@ -6,6 +6,7 @@ import { createStatelessServer } from "@smithery/sdk/server/stateless.js"
 import { z } from "zod"
 import { google, gmail_v1 } from 'googleapis'
 import fs from "fs"
+import * as quotedPrintable from 'quoted-printable'
 import { createOAuth2Client, launchAuthServer, validateCredentials } from "./oauth2.js"
 import { MCP_CONFIG_DIR, PORT, LOG_FILE_PATH } from "./config.js"
 
@@ -405,52 +406,10 @@ const stripMarkdownToPlainText = (text: string): string => {
 }
 
 const wrapTextBody = (text: string): string => {
-  // For quoted-printable encoding, we need to:
-  // 1. Convert string to UTF-8 bytes
-  // 2. Encode = character first
-  // 3. Then encode other special characters
-  // 4. Wrap lines at 76 characters
-  
-  // Convert string to UTF-8 bytes
-  const utf8Bytes = Buffer.from(text, 'utf8')
-  
-  let encoded = ''
-  for (let i = 0; i < utf8Bytes.length; i++) {
-    const byte = utf8Bytes[i]
-    
-    // Check if byte needs encoding
-    if (byte === 0x3D) { // = character
-      encoded += '=3D'
-    } else if (byte === 0x09 || (byte >= 0x20 && byte <= 0x7E)) { // Tab or printable ASCII
-      encoded += String.fromCharCode(byte)
-    } else {
-      // Encode as =XX
-      const hex = byte.toString(16).toUpperCase()
-      encoded += '=' + (hex.length < 2 ? '0' + hex : hex)
-    }
-  }
-    
-  // Wrap lines at 76 characters for quoted-printable
-  return encoded.split('\n').map(line => {
-    if (line.length <= 76) return line
-    
-    const chunks = []
-    let currentChunk = ''
-    
-    for (let i = 0; i < line.length; i++) {
-      currentChunk += line[i]
-      // Don't break in the middle of an encoded sequence (=XX)
-      if (currentChunk.length >= 73 && line[i] !== '=' && 
-          !(i > 0 && line[i-1] === '=') && 
-          !(i > 1 && line[i-2] === '=')) {
-        chunks.push(currentChunk + '=')
-        currentChunk = ''
-      }
-    }
-    
-    if (currentChunk) chunks.push(currentChunk)
-    return chunks.join('\n')
-  }).join('\n')
+  // First convert to UTF-8 bytes, then to latin1 string for quoted-printable
+  const utf8Buffer = Buffer.from(text, 'utf8')
+  const latin1String = utf8Buffer.toString('latin1')
+  return quotedPrintable.encode(latin1String)
 }
 
 const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) => {
