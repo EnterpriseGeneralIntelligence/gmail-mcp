@@ -84,6 +84,43 @@ const htmlToPlainText = (html) => {
         .replace(/\n\s*\n/g, '\n')
         .trim();
 };
+const convertGtQuotesToBlockquotes = (html) => {
+    // Split content by lines
+    const lines = html.split(/<br\s*\/?>/i);
+    let result = [];
+    let currentQuoteLevel = 0;
+    let openBlockquotes = [];
+    for (const line of lines) {
+        // Count the number of &gt; at the start of the line
+        const gtMatch = line.match(/^((?:&gt;\s*)+)(.*)/);
+        const newQuoteLevel = gtMatch ? (gtMatch[1].match(/&gt;/g) || []).length : 0;
+        const content = gtMatch ? gtMatch[2] : line;
+        // Close blockquotes if we're decreasing quote level
+        while (currentQuoteLevel > newQuoteLevel) {
+            result.push('</blockquote>');
+            openBlockquotes.pop();
+            currentQuoteLevel--;
+        }
+        // Open blockquotes if we're increasing quote level
+        while (currentQuoteLevel < newQuoteLevel) {
+            result.push('<blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">');
+            openBlockquotes.push(currentQuoteLevel);
+            currentQuoteLevel++;
+        }
+        // Add the content
+        result.push(content);
+        // Add line break if not the last line
+        if (lines.indexOf(line) < lines.length - 1) {
+            result.push('<br>');
+        }
+    }
+    // Close any remaining open blockquotes
+    while (currentQuoteLevel > 0) {
+        result.push('</blockquote>');
+        currentQuoteLevel--;
+    }
+    return result.join('');
+};
 const extractMessageContent = (messagePart) => {
     let textContent = [];
     let htmlContent = undefined;
@@ -98,11 +135,12 @@ const extractMessageContent = (messagePart) => {
     else if (messagePart.mimeType === 'text/html' && messagePart.body?.data) {
         const { data } = decodedBody(messagePart.body);
         if (data) {
-            // For HTML, keep the original HTML content for blockquote wrapping
+            // For HTML, keep the original HTML content without converting to text
             htmlContent = data;
-            // Also create a plain text version for fallback
+            // Create a plain text version but without adding > prefixes yet
+            // The > prefixes will be added later if needed for plain text version
             const plainText = htmlToPlainText(data);
-            textContent.push(plainText.split('\n').map(line => '> ' + line).join('\n'));
+            textContent.push(plainText);
         }
     }
     // Recursively process nested parts to find the best content
@@ -128,6 +166,7 @@ const extractMessageContent = (messagePart) => {
                 .map(part => extractMessageContent(part))
                 .filter(result => result.text.trim());
             if (nestedResults.length > 0) {
+                // Join nested text content without additional > prefixes
                 textContent.push(nestedResults.map(result => result.text).join('\n'));
                 // Use the first HTML content found
                 if (!htmlContent) {
@@ -196,7 +235,9 @@ const getQuotedContent = (thread) => {
     }
     const messageContent = extractMessageContent(lastMessage.payload);
     if (messageContent.text) {
-        quotedTextContent.push(messageContent.text);
+        // Add > prefix for plain text quoting
+        const quotedText = messageContent.text.split('\n').map(line => '> ' + line).join('\n');
+        quotedTextContent.push(quotedText);
         quotedTextContent.push('');
     }
     if (messageContent.html) {
@@ -207,10 +248,13 @@ const getQuotedContent = (thread) => {
             // Extract email address from the from header (handle both "Name <email>" and "email" formats)
             const emailMatch = fromHeader.match(/<([^>]+)>/);
             const emailAddress = emailMatch ? emailMatch[1] : fromHeader;
-            quotedHtmlContent = `<div>On ${dateHeader} &lt;${emailAddress}&gt; wrote:</div><br>${messageContent.html}`;
+            // Convert any &gt; quotes to proper blockquotes
+            const convertedHtml = convertGtQuotesToBlockquotes(messageContent.html);
+            quotedHtmlContent = `<div>On ${dateHeader} &lt;${emailAddress}&gt; wrote:</div><br>${convertedHtml}`;
         }
         else {
-            quotedHtmlContent = messageContent.html;
+            // Convert any &gt; quotes to proper blockquotes
+            quotedHtmlContent = convertGtQuotesToBlockquotes(messageContent.html);
         }
     }
     return {
