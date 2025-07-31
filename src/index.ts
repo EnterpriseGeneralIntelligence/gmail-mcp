@@ -121,48 +121,90 @@ const htmlToPlainText = (html: string): string => {
     .trim()
 }
 
+
 const extractMessageContent = (messagePart: MessagePart): { text: string, html?: string } => {
   let textContent = []
   let htmlContent: string | undefined = undefined
+
+  logToFile('extractMessageContent_start', {
+    mimeType: messagePart.mimeType,
+    hasBody: !!messagePart.body,
+    hasData: !!messagePart.body?.data,
+    hasParts: !!messagePart.parts,
+    partsCount: messagePart.parts?.length || 0
+  })
 
   // Check if current part has text content
   if (messagePart.mimeType === 'text/plain' && messagePart.body?.data) {
     const { data } = decodedBody(messagePart.body)
     if (data) {
+      logToFile('extractMessageContent_text_plain', {
+        dataLength: data.length,
+        firstLine: data.split('\n')[0],
+        linesCount: data.split('\n').length
+      })
       // For plain text, use the traditional > prefix for quoting
       textContent.push(data.split('\n').map(line => '> ' + line).join('\n'))
     }
   } else if (messagePart.mimeType === 'text/html' && messagePart.body?.data) {
     const { data } = decodedBody(messagePart.body)
     if (data) {
-      // For HTML, keep the original HTML content for blockquote wrapping
+      logToFile('extractMessageContent_text_html', {
+        htmlLength: data.length,
+        htmlPreview: data.substring(0, 200),
+        hasBlockquotes: data.includes('blockquote'),
+        hasGtSymbols: data.includes('&gt;')
+      })
+      // For HTML, keep the original HTML content without converting to text
       htmlContent = data
-      // Also create a plain text version for fallback
+      // Create a plain text version but without adding > prefixes yet
+      // The > prefixes will be added later if needed for plain text version
       const plainText = htmlToPlainText(data)
-      textContent.push(plainText.split('\n').map(line => '> ' + line).join('\n'))
+      logToFile('extractMessageContent_html_to_plain', {
+        plainTextLength: plainText.length,
+        plainTextPreview: plainText.substring(0, 200)
+      })
+      textContent.push(plainText)
     }
   }
 
   // Recursively process nested parts to find the best content
   if (messagePart.parts && messagePart.parts.length > 0) {
+    logToFile('extractMessageContent_processing_parts', {
+      partsCount: messagePart.parts.length,
+      partTypes: messagePart.parts.map(p => p.mimeType)
+    })
+    
     // Prefer text/plain over text/html for quoting
     const textPart = messagePart.parts.find(part => part.mimeType === 'text/plain')
     const htmlPart = messagePart.parts.find(part => part.mimeType === 'text/html')
 
+    logToFile('extractMessageContent_found_parts', {
+      hasTextPart: !!textPart,
+      hasHtmlPart: !!htmlPart
+    })
+
     if (textPart) {
       const textResult = extractMessageContent(textPart)
       if (textResult.text) textContent.push(textResult.text)
-    } else if (htmlPart) {
+    }
+    
+    // Process HTML part separately to get HTML content
+    if (htmlPart) {
       const htmlResult = extractMessageContent(htmlPart)
-      if (htmlResult.text) textContent.push(htmlResult.text)
+      // Only use the text from HTML if we don't have a text/plain part
+      if (!textPart && htmlResult.text) textContent.push(htmlResult.text)
       if (htmlResult.html) htmlContent = htmlResult.html
-    } else {
+    }
+    
+    if (!textPart && !htmlPart) {
       // Process other parts recursively
       const nestedResults = messagePart.parts
         .map(part => extractMessageContent(part))
         .filter(result => result.text.trim())
 
       if (nestedResults.length > 0) {
+        // Join nested text content without additional > prefixes
         textContent.push(nestedResults.map(result => result.text).join('\n'))
         // Use the first HTML content found
         if (!htmlContent) {
@@ -172,10 +214,20 @@ const extractMessageContent = (messagePart: MessagePart): { text: string, html?:
     }
   }
 
-  return {
+  const result = {
     text: textContent.join('\n'),
     html: htmlContent
   }
+  
+  logToFile('extractMessageContent_result', {
+    textLength: result.text.length,
+    hasHtml: !!result.html,
+    htmlLength: result.html?.length || 0,
+    textPreview: result.text.substring(0, 100),
+    htmlPreview: result.html?.substring(0, 100)
+  })
+
+  return result
 }
 
 const findHeader = (headers: MessagePartHeader[] | undefined, name: string) => {
@@ -219,9 +271,21 @@ const validateEmailHeader = (emails: string[]): string[] => {
 const getQuotedContent = (thread: Thread): { text: string, html?: string } => {
   if (!thread.messages?.length) return { text: '' }
 
+  logToFile('getQuotedContent_start', {
+    threadId: thread.id,
+    messageCount: thread.messages.length
+  })
+
   // Get the last message in the thread (most recent)
   const lastMessage = thread.messages[thread.messages.length - 1]
   if (!lastMessage?.payload) return { text: '' }
+
+  logToFile('getQuotedContent_last_message', {
+    messageId: lastMessage.id,
+    hasParts: !!lastMessage.payload.parts,
+    partsCount: lastMessage.payload.parts?.length || 0,
+    mimeType: lastMessage.payload.mimeType
+  })
 
   let quotedTextContent = []
   let quotedHtmlContent: string | undefined = undefined
@@ -237,8 +301,20 @@ const getQuotedContent = (thread: Thread): { text: string, html?: string } => {
   }
 
   const messageContent = extractMessageContent(lastMessage.payload)
+  
+  logToFile('getQuotedContent_extracted_content', {
+    hasText: !!messageContent.text,
+    textLength: messageContent.text?.length || 0,
+    hasHtml: !!messageContent.html,
+    htmlLength: messageContent.html?.length || 0,
+    textPreview: messageContent.text?.substring(0, 100),
+    htmlPreview: messageContent.html?.substring(0, 200)
+  })
+
   if (messageContent.text) {
-    quotedTextContent.push(messageContent.text)
+    // Add > prefix for plain text quoting
+    const quotedText = messageContent.text.split('\n').map(line => '> ' + line).join('\n')
+    quotedTextContent.push(quotedText)
     quotedTextContent.push('')
   }
 
@@ -250,11 +326,18 @@ const getQuotedContent = (thread: Thread): { text: string, html?: string } => {
       // Extract email address from the from header (handle both "Name <email>" and "email" formats)
       const emailMatch = fromHeader.match(/<([^>]+)>/)
       const emailAddress = emailMatch ? emailMatch[1] : fromHeader
+      
       quotedHtmlContent = `<div>On ${dateHeader} &lt;${emailAddress}&gt; wrote:</div><br>${messageContent.html}`
     } else {
       quotedHtmlContent = messageContent.html
     }
   }
+
+  logToFile('getQuotedContent_final_result', {
+    textLength: quotedTextContent.join('\n').length,
+    htmlLength: quotedHtmlContent?.length || 0,
+    hasHtmlQuote: !!quotedHtmlContent
+  })
 
   return {
     text: quotedTextContent.join('\n'),
