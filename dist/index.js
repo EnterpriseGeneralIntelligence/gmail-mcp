@@ -503,7 +503,7 @@ const constructRawMessage = async (gmail, params) => {
             replyCcRecipients: replyCcRecipients.length
         });
         // Merge explicitly provided recipients with those from reply-all logic
-        let toRecipients = [...(params.to || [])];
+        let toRecipients = [...(params.to || [])].map(email => email.trim()).filter(email => email.length > 0);
         const toEmails = new Set(toRecipients.map(extractEmailAddress));
         replyToRecipients.forEach(email => {
             const emailAddr = extractEmailAddress(email);
@@ -513,9 +513,9 @@ const constructRawMessage = async (gmail, params) => {
             }
         });
         if (toRecipients.length)
-            message.push(`To: ${wrapTextBody(toRecipients.join(', '))}`);
+            message.push(`To: ${toRecipients.join(', ')}`);
         // Handle CC recipients - combine from thread reply-all and new params
-        let ccRecipients = [...(params.cc || [])];
+        let ccRecipients = [...(params.cc || [])].map(email => email.trim()).filter(email => email.length > 0);
         const ccEmails = new Set(ccRecipients.map(extractEmailAddress));
         replyCcRecipients.forEach(email => {
             const emailAddr = extractEmailAddress(email);
@@ -537,7 +537,7 @@ const constructRawMessage = async (gmail, params) => {
             ccCount: filteredCcEmails.length
         });
         if (filteredCcEmails.length)
-            message.push(`Cc: ${wrapTextBody(filteredCcEmails.join(', '))}`);
+            message.push(`Cc: ${filteredCcEmails.join(', ')}`);
         logToFile('constructRawMessage_final_recipients', {
             toCount: toRecipients.length,
             ccCount: ccRecipients.length,
@@ -551,8 +551,13 @@ const constructRawMessage = async (gmail, params) => {
             ccRecipients: params.cc || []
         });
         // For new messages, just use the provided recipients
-        if (params.to?.length)
-            message.push(`To: ${wrapTextBody(params.to.join(', '))}`);
+        if (params.to?.length) {
+            // Clean and validate To addresses
+            const cleanedToAddresses = params.to.map(email => email.trim()).filter(email => email.length > 0);
+            if (cleanedToAddresses.length > 0) {
+                message.push(`To: ${cleanedToAddresses.join(', ')}`);
+            }
+        }
         if (params.cc?.length) {
             // Extract just email addresses for CC header (no display names)
             const toEmailAddresses = (params.to || []).map(extractEmailAddress);
@@ -566,20 +571,22 @@ const constructRawMessage = async (gmail, params) => {
                 filteredCcEmails: filteredCcEmails
             });
             if (filteredCcEmails.length)
-                message.push(`Cc: ${wrapTextBody(filteredCcEmails.join(', '))}`);
+                message.push(`Cc: ${filteredCcEmails.join(', ')}`);
         }
     }
     // Handle BCC recipients
     if (params.bcc?.length) {
-        // Extract just email addresses for BCC header (no display names)
-        const bccEmailAddresses = params.bcc.map(extractEmailAddress);
+        // Clean and extract just email addresses for BCC header (no display names)
+        const cleanedBcc = params.bcc.map(email => email.trim()).filter(email => email.length > 0);
+        const bccEmailAddresses = cleanedBcc.map(extractEmailAddress);
         logToFile('constructRawMessage_bcc_extracted', {
             originalBcc: params.bcc,
+            cleanedBcc: cleanedBcc,
             extractedBccEmails: bccEmailAddresses,
             bccCount: bccEmailAddresses.length
         });
         if (bccEmailAddresses.length)
-            message.push(`Bcc: ${wrapTextBody(bccEmailAddresses.join(', '))}`);
+            message.push(`Bcc: ${bccEmailAddresses.join(', ')}`);
     }
     // Handle threading headers for proper conversation grouping
     let subjectHeader = '(No Subject)';
@@ -717,12 +724,16 @@ const constructRawMessage = async (gmail, params) => {
     message.push(`--${boundary}--`);
     const fullMessage = message.join('\r\n');
     const raw = Buffer.from(fullMessage).toString('base64url').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    // Log the headers portion of the message for debugging
+    const headerEndIndex = fullMessage.indexOf('\r\n\r\n');
+    const headers = headerEndIndex > 0 ? fullMessage.substring(0, headerEndIndex) : fullMessage.substring(0, 1000);
     logToFile('constructRawMessage_complete', {
         rawLength: raw.length,
         messagePartsCount: message.length,
         validThreadId,
+        headers: headers,
         // Log a portion of the HTML part for debugging
-        htmlPart: fullMessage.substring(fullMessage.indexOf('Content-Type: text/html'), fullMessage.indexOf('Content-Type: text/html') + 500)
+        htmlPart: fullMessage.substring(fullMessage.indexOf('Content-Type: text/html'), Math.min(fullMessage.indexOf('Content-Type: text/html') + 500, fullMessage.length))
     });
     return { raw, validThreadId };
 };
