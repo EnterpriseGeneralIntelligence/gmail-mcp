@@ -305,9 +305,15 @@ const getReplyAllRecipients = (thread, currentUserEmail) => {
     let toRecipients = [];
     let ccRecipients = [];
     if (wasSentByUser) {
-        // If the user sent the last message, reply to the same recipients
-        toRecipients = [...toEmails];
-        ccRecipients = [...ccEmails];
+        // If the user sent the last message, reply to the same recipients but exclude current user
+        toRecipients = [...toEmails].filter(email => {
+            const emailOnly = email.match(/<([^>]+)>/) ? email.match(/<([^>]+)>/)[1] : email;
+            return emailOnly.toLowerCase() !== currentUserEmail.toLowerCase();
+        });
+        ccRecipients = [...ccEmails].filter(email => {
+            const emailOnly = email.match(/<([^>]+)>/) ? email.match(/<([^>]+)>/)[1] : email;
+            return emailOnly.toLowerCase() !== currentUserEmail.toLowerCase();
+        });
     }
     else {
         // If the user received the message, reply to the sender and include all other recipients
