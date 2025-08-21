@@ -369,9 +369,15 @@ const getReplyAllRecipients = (thread: Thread, currentUserEmail: string): { to: 
   let ccRecipients: string[] = []
 
   if (wasSentByUser) {
-    // If the user sent the last message, reply to the same recipients
-    toRecipients = [...toEmails]
-    ccRecipients = [...ccEmails]
+    // If the user sent the last message, reply to the same recipients but exclude current user
+    toRecipients = [...toEmails].filter(email => {
+      const emailOnly = email.match(/<([^>]+)>/) ? email.match(/<([^>]+)>/)![1] : email
+      return emailOnly.toLowerCase() !== currentUserEmail.toLowerCase()
+    })
+    ccRecipients = [...ccEmails].filter(email => {
+      const emailOnly = email.match(/<([^>]+)>/) ? email.match(/<([^>]+)>/)![1] : email
+      return emailOnly.toLowerCase() !== currentUserEmail.toLowerCase()
+    })
   } else {
     // If the user received the message, reply to the sender and include all other recipients
     toRecipients = [...fromEmails]
@@ -407,26 +413,30 @@ const convertMarkdownToHtml = (text: string, tracking_click_link?: string): stri
     tracking_click_link
   })
 
-  // Convert markdown links FIRST before escaping HTML entities
-  // This ensures the generated HTML tags are not escaped
+  // Process in order: escape HTML -> markdown links -> plain URLs -> bold -> italic -> line breaks
+  
+  // 1. Escape HTML entities first (except those that will be in URLs)
+  html = html
+    .replace(/&(?!amp;|lt;|gt;|quot;|#39;)/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+  
+  // 2. Convert markdown links
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, linkText, url) => {
-    // Clean and prepare the URL
     const cleanUrl = url.trim()
     
-    // Ensure the URL has a protocol (for Gmail compatibility)
     let finalUrl = cleanUrl
     if (!cleanUrl.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:/)) {
-      // If no protocol, assume https://
       finalUrl = 'https://' + cleanUrl
     }
     
-    // Apply click tracking if provided
     if (tracking_click_link) {
       const encodedOriginalUrl = encodeURIComponent(finalUrl)
       finalUrl = `${tracking_click_link}?url=${encodedOriginalUrl}`
     }
     
-    // Escape HTML entities in the link text only
     const escapedLinkText = linkText
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
@@ -434,48 +444,83 @@ const convertMarkdownToHtml = (text: string, tracking_click_link?: string): stri
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;')
     
-    // Return the HTML link with properly encoded URL
-    // Don't encode again if we've already applied tracking (which includes encoding)
     const href = tracking_click_link ? finalUrl : encodeURI(finalUrl)
     const result = `<a href="${href}" target="_blank">${escapedLinkText}</a>`
     
     logToFile('convertMarkdownToHtml_link', {
-      match,
-      linkText,
-      url,
-      cleanUrl,
-      finalUrl,
-      escapedLinkText,
-      result,
+      match, linkText, url, cleanUrl, finalUrl, escapedLinkText, result,
       tracking_applied: !!tracking_click_link
     })
     
     return result
   })
 
-  // Now escape HTML entities in the remaining text (not inside HTML tags)
-  // This regex matches text outside of HTML tags
-  html = html.replace(/([^<>]+)(?=<|$)/g, (match) => {
-    // Skip if this is inside an HTML tag
-    if (match.includes('href=') || match.includes('target=')) {
-      return match
+  // 3. Convert plain URLs (before italic processing to protect underscores)
+  // Split by existing anchor tags to avoid processing URLs inside them
+  const parts = html.split(/(<a[^>]*>.*?<\/a>)/gi)
+  html = parts.map(part => {
+    // Skip if this is an existing anchor tag
+    if (part.match(/^<a[^>]*>.*?<\/a>$/i)) {
+      return part
     }
-    return match
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-  })
+    
+    // Process plain URLs in text content only
+    if (tracking_click_link) {
+      return part.replace(/\b((?:https?:\/\/|www\.)[^\s<>\"']+)/gi, (match, url) => {
+        // Remove trailing punctuation but preserve it
+        const trailingPunctuation = url.match(/[.,;:!?)\]}>]*$/)?.[0] || ''
+        const cleanUrl = url.replace(/[.,;:!?)\]}>]*$/, '')
+        let finalUrl = cleanUrl
+        if (cleanUrl.startsWith('www.')) {
+          finalUrl = 'https://' + cleanUrl
+        }
+        
+        const encodedOriginalUrl = encodeURIComponent(finalUrl)
+        const trackedUrl = `${tracking_click_link}?url=${encodedOriginalUrl}`
+        
+        logToFile('convertMarkdownToHtml_plain_url_tracked', {
+          originalUrl: cleanUrl, finalUrl, trackedUrl, match
+        })
+        
+        return `<a href="${trackedUrl}" target="_blank">${cleanUrl}</a>${trailingPunctuation}`
+      })
+    } else {
+      // Convert plain URLs without tracking
+      return part.replace(/\b((?:https?:\/\/|www\.)[^\s<>\"']+)/gi, (match, url) => {
+        // Remove trailing punctuation but preserve it
+        const trailingPunctuation = url.match(/[.,;:!?)\]}>]*$/)?.[0] || ''
+        const cleanUrl = url.replace(/[.,;:!?)\]}>]*$/, '')
+        let finalUrl = cleanUrl
+        if (cleanUrl.startsWith('www.')) {
+          finalUrl = 'https://' + cleanUrl
+        }
+        return `<a href="${encodeURI(finalUrl)}" target="_blank">${cleanUrl}</a>${trailingPunctuation}`
+      })
+    }
+  }).join('')
 
-  // Convert bold syntax: **text** or __text__
+  // 4. Convert bold syntax
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>')
 
-  // Convert italic syntax: *text* or _text_ (but not if part of bold)
-  // Use negative lookbehind and lookahead to avoid matching bold syntax
-  html = html.replace(/(?<!\*)\*(?!\*)([^*]+)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
-  html = html.replace(/(?<!_)_(?!_)([^_]+)(?<!_)_(?!_)/g, '<em>$1</em>')
+  // 5. Convert italic syntax (handle content that may contain HTML tags)
+  // First handle italic around complete elements like *<a>link</a>*
+  html = html.replace(/\*(<(?:a|strong)[^>]*>.*?<\/(?:a|strong)>)\*/g, '<em>$1</em>')
+  html = html.replace(/\b_(<(?:a|strong)[^>]*>.*?<\/(?:a|strong)>)_\b/g, '<em>$1</em>')
+  
+  // Then handle italic in regular text content, avoiding existing HTML tags
+  html = html.split(/(<(?:strong|em|a)[^>]*>.*?<\/(?:strong|em|a)>)/g).map(part => {
+    // Skip complete HTML tags we've already processed
+    if (part.match(/^<(?:strong|em|a)[^>]*>.*?<\/(?:strong|em|a)>$/)) {
+      return part
+    }
+    // Apply italic formatting to text content only
+    return part
+      .replace(/\*([^*]+?)\*/g, '<em>$1</em>')
+      .replace(/\b_([^_]+?)_\b/g, '<em>$1</em>')
+  }).join('')
 
-  // Convert line breaks to <br>
+  // 6. Convert line breaks
   html = html.replace(/\n/g, '<br>')
   
   // Apply click tracking to existing HTML links if tracking_click_link is provided
@@ -496,34 +541,6 @@ const convertMarkdownToHtml = (text: string, tracking_click_link?: string): stri
       })
       
       return `<a ${preHref}href="${trackedUrl}"${postHref}>`
-    })
-  }
-  
-  // Apply click tracking to plain URLs if tracking_click_link is provided
-  if (tracking_click_link) {
-    // Match URLs that are not already inside HTML tags or markdown links
-    // This handles both https?:// URLs and www. URLs
-    html = html.replace(/(?<!href=["']|href=)\b((?:https?:\/\/|www\.)[^\s<>"']+)/gi, (match, url) => {
-      // Skip if this URL is already inside an HTML tag (like <a href=...)
-      // This regex looks for URLs that are not preceded by href= 
-      
-      // Add https:// protocol if the URL starts with www.
-      let finalUrl = url
-      if (url.startsWith('www.')) {
-        finalUrl = 'https://' + url
-      }
-      
-      const encodedOriginalUrl = encodeURIComponent(finalUrl)
-      const trackedUrl = `${tracking_click_link}?url=${encodedOriginalUrl}`
-      
-      logToFile('convertMarkdownToHtml_plain_url_tracked', {
-        originalUrl: url,
-        finalUrl,
-        trackedUrl,
-        match
-      })
-      
-      return `<a href="${trackedUrl}" target="_blank">${url}</a>`
     })
   }
   
@@ -555,6 +572,8 @@ export const wrapTextBody = (text: string): string => {
   const latin1String = utf8Buffer.toString('latin1')
   return quotedPrintable.encode(latin1String)
 }
+
+export { convertMarkdownToHtml }
 
 const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) => {
   logToFile('constructRawMessage_start', { params: { ...params, body: params.body ? params.body.substring(0, 100) + (params.body.length > 100 ? '...' : '') : undefined } })
@@ -1966,4 +1985,8 @@ const main = async () => {
   await stdioServer.connect(transport)
 }
 
-main()
+// Avoid running the server during tests
+if (!process.env.JEST_WORKER_ID) {
+  // eslint-disable-next-line @typescript-eslint/no-floating-promises
+  main()
+}
