@@ -342,8 +342,15 @@ const convertMarkdownToHtml = (text, tracking_click_link) => {
         input: text,
         tracking_click_link
     });
-    // Process in order: markdown links -> plain URLs -> escape -> bold -> italic -> line breaks
-    // 1. Convert markdown links
+    // Process in order: escape HTML -> markdown links -> plain URLs -> bold -> italic -> line breaks
+    // 1. Escape HTML entities first (except those that will be in URLs)
+    html = html
+        .replace(/&(?!amp;|lt;|gt;|quot;|#39;)/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    // 2. Convert markdown links
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, linkText, url) => {
         const cleanUrl = url.trim();
         let finalUrl = cleanUrl;
@@ -368,51 +375,63 @@ const convertMarkdownToHtml = (text, tracking_click_link) => {
         });
         return result;
     });
-    // 2. Convert plain URLs (before italic processing to protect underscores)
-    if (tracking_click_link) {
-        html = html.replace(/(?<!href=[\"']|href=)\b((?:https?:\/\/|www\.)[^\s<>\"']+)/gi, (match, url) => {
-            let finalUrl = url;
-            if (url.startsWith('www.')) {
-                finalUrl = 'https://' + url;
-            }
-            const encodedOriginalUrl = encodeURIComponent(finalUrl);
-            const trackedUrl = `${tracking_click_link}?url=${encodedOriginalUrl}`;
-            logToFile('convertMarkdownToHtml_plain_url_tracked', {
-                originalUrl: url, finalUrl, trackedUrl, match
+    // 3. Convert plain URLs (before italic processing to protect underscores)
+    // Split by existing anchor tags to avoid processing URLs inside them
+    const parts = html.split(/(<a[^>]*>.*?<\/a>)/gi);
+    html = parts.map(part => {
+        // Skip if this is an existing anchor tag
+        if (part.match(/^<a[^>]*>.*?<\/a>$/i)) {
+            return part;
+        }
+        // Process plain URLs in text content only
+        if (tracking_click_link) {
+            return part.replace(/\b((?:https?:\/\/|www\.)[^\s<>\"']+)/gi, (match, url) => {
+                // Remove trailing punctuation but preserve it
+                const trailingPunctuation = url.match(/[.,;:!?)\]}>]*$/)?.[0] || '';
+                const cleanUrl = url.replace(/[.,;:!?)\]}>]*$/, '');
+                let finalUrl = cleanUrl;
+                if (cleanUrl.startsWith('www.')) {
+                    finalUrl = 'https://' + cleanUrl;
+                }
+                const encodedOriginalUrl = encodeURIComponent(finalUrl);
+                const trackedUrl = `${tracking_click_link}?url=${encodedOriginalUrl}`;
+                logToFile('convertMarkdownToHtml_plain_url_tracked', {
+                    originalUrl: cleanUrl, finalUrl, trackedUrl, match
+                });
+                return `<a href="${trackedUrl}" target="_blank">${cleanUrl}</a>${trailingPunctuation}`;
             });
-            return `<a href="${trackedUrl}" target="_blank">${url}</a>`;
-        });
-    }
-    else {
-        // Convert plain URLs without tracking
-        html = html.replace(/(?<!href=[\"']|href=)\b((?:https?:\/\/|www\.)[^\s<>\"']+)/gi, (match, url) => {
-            let finalUrl = url;
-            if (url.startsWith('www.')) {
-                finalUrl = 'https://' + url;
-            }
-            return `<a href="${encodeURI(finalUrl)}" target="_blank">${url}</a>`;
-        });
-    }
-    // 3. Escape HTML entities in remaining text (skip existing HTML tags)
-    html = html.replace(/[^<>]+/g, (textContent) => {
-        return textContent
-            .replace(/&(?!amp;|lt;|gt;|quot;|#39;)/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
-    });
+        }
+        else {
+            // Convert plain URLs without tracking
+            return part.replace(/\b((?:https?:\/\/|www\.)[^\s<>\"']+)/gi, (match, url) => {
+                // Remove trailing punctuation but preserve it
+                const trailingPunctuation = url.match(/[.,;:!?)\]}>]*$/)?.[0] || '';
+                const cleanUrl = url.replace(/[.,;:!?)\]}>]*$/, '');
+                let finalUrl = cleanUrl;
+                if (cleanUrl.startsWith('www.')) {
+                    finalUrl = 'https://' + cleanUrl;
+                }
+                return `<a href="${encodeURI(finalUrl)}" target="_blank">${cleanUrl}</a>${trailingPunctuation}`;
+            });
+        }
+    }).join('');
     // 4. Convert bold syntax
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
-    // 5. Convert italic syntax (protect complete HTML elements)
-    html = html.split(/(<a[^>]*>.*?<\/a>)/g).map(part => {
-        // Skip complete anchor tags
-        if (part.match(/^<a[^>]*>.*?<\/a>$/)) {
+    // 5. Convert italic syntax (handle content that may contain HTML tags)
+    // First handle italic around complete elements like *<a>link</a>*
+    html = html.replace(/\*(<(?:a|strong)[^>]*>.*?<\/(?:a|strong)>)\*/g, '<em>$1</em>');
+    html = html.replace(/\b_(<(?:a|strong)[^>]*>.*?<\/(?:a|strong)>)_\b/g, '<em>$1</em>');
+    // Then handle italic in regular text content, avoiding existing HTML tags
+    html = html.split(/(<(?:strong|em|a)[^>]*>.*?<\/(?:strong|em|a)>)/g).map(part => {
+        // Skip complete HTML tags we've already processed
+        if (part.match(/^<(?:strong|em|a)[^>]*>.*?<\/(?:strong|em|a)>$/)) {
             return part;
         }
         // Apply italic formatting to text content only
         return part
-            .replace(/(?<!\*)\*(?!\*)([^*]+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
-            .replace(/(?<!_)_(?!_)([^_]+?)(?<!_)_(?!_)/g, '<em>$1</em>');
+            .replace(/\*([^*]+?)\*/g, '<em>$1</em>')
+            .replace(/\b_([^_]+?)_\b/g, '<em>$1</em>');
     }).join('');
     // 6. Convert line breaks
     html = html.replace(/\n/g, '<br>');
@@ -455,6 +474,7 @@ export const wrapTextBody = (text) => {
     const latin1String = utf8Buffer.toString('latin1');
     return quotedPrintable.encode(latin1String);
 };
+export { convertMarkdownToHtml };
 const constructRawMessage = async (gmail, params) => {
     logToFile('constructRawMessage_start', { params: { ...params, body: params.body ? params.body.substring(0, 100) + (params.body.length > 100 ? '...' : '') : undefined } });
     let thread = null;
