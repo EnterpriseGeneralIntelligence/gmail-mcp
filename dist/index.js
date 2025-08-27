@@ -5,6 +5,7 @@ import { z } from "zod";
 import { google } from 'googleapis';
 import fs from "fs";
 import quotedPrintable from 'quoted-printable';
+import addressparser from 'addressparser';
 import { createOAuth2Client, launchAuthServer, validateCredentials } from "./oauth2.js";
 import { MCP_CONFIG_DIR, LOG_FILE_PATH } from "./config.js";
 const RESPONSE_HEADERS_LIST = [
@@ -191,7 +192,22 @@ const findHeader = (headers, name) => {
 const formatEmailList = (emailList) => {
     if (!emailList)
         return [];
-    return emailList.split(',').map(email => email.trim());
+    // Use addressparser to properly handle RFC 2822 compliant email addresses
+    // This correctly handles quoted strings with commas, e.g., "Last, First" <email@domain.com>
+    const parsed = addressparser(emailList);
+    // Convert parsed addresses back to string format
+    return parsed.map(addr => {
+        if (addr.name && addr.address) {
+            // If there's a display name with special characters, quote it
+            if (addr.name.includes(',') || addr.name.includes('"')) {
+                // Escape any quotes in the name and wrap in quotes
+                const escapedName = addr.name.replace(/"/g, '\\"');
+                return `"${escapedName}" <${addr.address}>`;
+            }
+            return `${addr.name} <${addr.address}>`;
+        }
+        return addr.address || '';
+    }).filter(email => email.length > 0);
 };
 const extractEmailAddress = (emailString) => {
     // Extract email from "Name <email>" format or just return the email if it's plain
@@ -1499,4 +1515,8 @@ const main = async () => {
     const transport = new StdioServerTransport();
     await stdioServer.connect(transport);
 };
-main();
+// Avoid running the server during tests
+if (!process.env.JEST_WORKER_ID) {
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    main();
+}
