@@ -7,6 +7,7 @@ import { z } from "zod"
 import { google, gmail_v1 } from 'googleapis'
 import fs from "fs"
 import quotedPrintable from 'quoted-printable'
+import addressparser from 'addressparser'
 import { createOAuth2Client, launchAuthServer, validateCredentials } from "./oauth2.js"
 import { MCP_CONFIG_DIR, PORT, LOG_FILE_PATH } from "./config.js"
 
@@ -174,7 +175,7 @@ const extractMessageContent = (messagePart: MessagePart): { text: string, html?:
       partsCount: messagePart.parts.length,
       partTypes: messagePart.parts.map(p => p.mimeType)
     })
-    
+
     // Prefer text/plain over text/html for quoting
     const textPart = messagePart.parts.find(part => part.mimeType === 'text/plain')
     const htmlPart = messagePart.parts.find(part => part.mimeType === 'text/html')
@@ -188,7 +189,7 @@ const extractMessageContent = (messagePart: MessagePart): { text: string, html?:
       const textResult = extractMessageContent(textPart)
       if (textResult.text) textContent.push(textResult.text)
     }
-    
+
     // Process HTML part separately to get HTML content
     if (htmlPart) {
       const htmlResult = extractMessageContent(htmlPart)
@@ -196,7 +197,7 @@ const extractMessageContent = (messagePart: MessagePart): { text: string, html?:
       if (!textPart && htmlResult.text) textContent.push(htmlResult.text)
       if (htmlResult.html) htmlContent = htmlResult.html
     }
-    
+
     if (!textPart && !htmlPart) {
       // Process other parts recursively
       const nestedResults = messagePart.parts
@@ -218,7 +219,7 @@ const extractMessageContent = (messagePart: MessagePart): { text: string, html?:
     text: textContent.join('\n'),
     html: htmlContent
   }
-  
+
   logToFile('extractMessageContent_result', {
     textLength: result.text.length,
     hasHtml: !!result.html,
@@ -235,9 +236,26 @@ const findHeader = (headers: MessagePartHeader[] | undefined, name: string) => {
   return headers.find(h => h?.name?.toLowerCase() === name.toLowerCase())?.value ?? undefined
 }
 
-const formatEmailList = (emailList: string | null | undefined) => {
+const formatEmailList = (emailList: string | null | undefined): string[] => {
   if (!emailList) return []
-  return emailList.split(',').map(email => email.trim())
+
+  // Use addressparser to properly handle RFC 2822 compliant email addresses
+  // This correctly handles quoted strings with commas, e.g., "Last, First" <email@domain.com>
+  const parsed = addressparser(emailList)
+
+  // Convert parsed addresses back to string format
+  return parsed.map(addr => {
+    if (addr.name && addr.address) {
+      // If there's a display name with special characters, quote it
+      if (addr.name.includes(',') || addr.name.includes('"')) {
+        // Escape any quotes in the name and wrap in quotes
+        const escapedName = addr.name.replace(/"/g, '\\"')
+        return `"${escapedName}" <${addr.address}>`
+      }
+      return `${addr.name} <${addr.address}>`
+    }
+    return addr.address || ''
+  }).filter(email => email.length > 0)
 }
 
 const extractEmailAddress = (emailString: string): string => {
@@ -251,13 +269,13 @@ const validateEmailHeader = (emails: string[]): string[] => {
     // Check for basic email validity and no problematic characters
     const cleanEmail = email.trim()
     if (!cleanEmail) return false
-    
+
     // Check for control characters, line breaks, or other problematic characters
     if (/[\r\n\t\x00-\x1f\x7f-\x9f]/.test(cleanEmail)) {
       logToFile('validateEmailHeader_invalid_chars', { email: cleanEmail, chars: cleanEmail.match(/[\r\n\t\x00-\x1f\x7f-\x9f]/g) })
       return false
     }
-    
+
     // Basic email format check
     const emailAddr = extractEmailAddress(cleanEmail)
     const isValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailAddr)
@@ -301,7 +319,7 @@ const getQuotedContent = (thread: Thread): { text: string, html?: string } => {
   }
 
   const messageContent = extractMessageContent(lastMessage.payload)
-  
+
   logToFile('getQuotedContent_extracted_content', {
     hasText: !!messageContent.text,
     textLength: messageContent.text?.length || 0,
@@ -326,7 +344,7 @@ const getQuotedContent = (thread: Thread): { text: string, html?: string } => {
       // Extract email address from the from header (handle both "Name <email>" and "email" formats)
       const emailMatch = fromHeader.match(/<([^>]+)>/)
       const emailAddress = emailMatch ? emailMatch[1] : fromHeader
-      
+
       quotedHtmlContent = `<div>On ${dateHeader} &lt;${emailAddress}&gt; wrote:</div><br>${messageContent.html}`
     } else {
       quotedHtmlContent = messageContent.html
@@ -407,14 +425,14 @@ const sanitizeSubject = (subject: string): string => {
 
 const convertMarkdownToHtml = (text: string, tracking_click_link?: string): string => {
   let html = text
-  
-  logToFile('convertMarkdownToHtml_start', { 
+
+  logToFile('convertMarkdownToHtml_start', {
     input: text,
     tracking_click_link
   })
 
   // Process in order: escape HTML -> markdown links -> plain URLs -> bold -> italic -> line breaks
-  
+
   // 1. Escape HTML entities first (except those that will be in URLs)
   html = html
     .replace(/&(?!amp;|lt;|gt;|quot;|#39;)/g, '&amp;')
@@ -422,36 +440,36 @@ const convertMarkdownToHtml = (text: string, tracking_click_link?: string): stri
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
-  
+
   // 2. Convert markdown links
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, linkText, url) => {
     const cleanUrl = url.trim()
-    
+
     let finalUrl = cleanUrl
     if (!cleanUrl.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:/)) {
       finalUrl = 'https://' + cleanUrl
     }
-    
+
     if (tracking_click_link) {
       const encodedOriginalUrl = encodeURIComponent(finalUrl)
       finalUrl = `${tracking_click_link}?url=${encodedOriginalUrl}`
     }
-    
+
     const escapedLinkText = linkText
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;')
-    
+
     const href = tracking_click_link ? finalUrl : encodeURI(finalUrl)
     const result = `<a href="${href}" target="_blank">${escapedLinkText}</a>`
-    
+
     logToFile('convertMarkdownToHtml_link', {
       match, linkText, url, cleanUrl, finalUrl, escapedLinkText, result,
       tracking_applied: !!tracking_click_link
     })
-    
+
     return result
   })
 
@@ -463,7 +481,7 @@ const convertMarkdownToHtml = (text: string, tracking_click_link?: string): stri
     if (part.match(/^<a[^>]*>.*?<\/a>$/i)) {
       return part
     }
-    
+
     // Process plain URLs in text content only
     if (tracking_click_link) {
       return part.replace(/\b((?:https?:\/\/|www\.)[^\s<>\"']+)/gi, (match, url) => {
@@ -474,14 +492,14 @@ const convertMarkdownToHtml = (text: string, tracking_click_link?: string): stri
         if (cleanUrl.startsWith('www.')) {
           finalUrl = 'https://' + cleanUrl
         }
-        
+
         const encodedOriginalUrl = encodeURIComponent(finalUrl)
         const trackedUrl = `${tracking_click_link}?url=${encodedOriginalUrl}`
-        
+
         logToFile('convertMarkdownToHtml_plain_url_tracked', {
           originalUrl: cleanUrl, finalUrl, trackedUrl, match
         })
-        
+
         return `<a href="${trackedUrl}" target="_blank">${cleanUrl}</a>${trailingPunctuation}`
       })
     } else {
@@ -507,7 +525,7 @@ const convertMarkdownToHtml = (text: string, tracking_click_link?: string): stri
   // First handle italic around complete elements like *<a>link</a>*
   html = html.replace(/\*(<(?:a|strong)[^>]*>.*?<\/(?:a|strong)>)\*/g, '<em>$1</em>')
   html = html.replace(/\b_(<(?:a|strong)[^>]*>.*?<\/(?:a|strong)>)_\b/g, '<em>$1</em>')
-  
+
   // Then handle italic in regular text content, avoiding existing HTML tags
   html = html.split(/(<(?:strong|em|a)[^>]*>.*?<\/(?:strong|em|a)>)/g).map(part => {
     // Skip complete HTML tags we've already processed
@@ -522,7 +540,7 @@ const convertMarkdownToHtml = (text: string, tracking_click_link?: string): stri
 
   // 6. Convert line breaks
   html = html.replace(/\n/g, '<br>')
-  
+
   // Apply click tracking to existing HTML links if tracking_click_link is provided
   if (tracking_click_link) {
     html = html.replace(/<a\s+([^>]*?)href=["']([^"']+)["']([^>]*?)>/gi, (match, preHref, url, postHref) => {
@@ -530,22 +548,22 @@ const convertMarkdownToHtml = (text: string, tracking_click_link?: string): stri
       if (url.includes(tracking_click_link)) {
         return match
       }
-      
+
       const encodedOriginalUrl = encodeURIComponent(url)
       const trackedUrl = `${tracking_click_link}?url=${encodedOriginalUrl}`
-      
+
       logToFile('convertMarkdownToHtml_existing_link_tracked', {
         originalUrl: url,
         trackedUrl,
         match
       })
-      
+
       return `<a ${preHref}href="${trackedUrl}"${postHref}>`
     })
   }
-  
-  logToFile('convertMarkdownToHtml_final', { 
-    output: html 
+
+  logToFile('convertMarkdownToHtml_final', {
+    output: html
   })
 
   return html
@@ -647,22 +665,22 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
         ccEmails.add(emailAddr)
       }
     })
-    
+
     // Extract just email addresses for CC header (no display names)
     const toEmailAddresses = toRecipients.map(extractEmailAddress)
     const ccEmailAddresses = ccRecipients.map(extractEmailAddress)
-    
+
     // Remove CC recipients that are already in TO
     const filteredCcEmails = ccEmailAddresses.filter(ccEmail => !toEmailAddresses.includes(ccEmail))
-    
-    logToFile('constructRawMessage_cc_extracted', { 
+
+    logToFile('constructRawMessage_cc_extracted', {
       originalCcRecipients: ccRecipients,
       extractedCcEmails: ccEmailAddresses,
       toEmails: toEmailAddresses,
       filteredCcEmails: filteredCcEmails,
-      ccCount: filteredCcEmails.length 
+      ccCount: filteredCcEmails.length
     })
-    
+
     if (filteredCcEmails.length) message.push(`Cc: ${filteredCcEmails.join(', ')}`)
 
     logToFile('constructRawMessage_final_recipients', {
@@ -688,11 +706,11 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
       // Extract just email addresses for CC header (no display names)
       const toEmailAddresses = (params.to || []).map(extractEmailAddress)
       const ccEmailAddresses = params.cc.map(extractEmailAddress)
-      
+
       // Remove CC recipients that are already in TO
       const filteredCcEmails = ccEmailAddresses.filter(ccEmail => !toEmailAddresses.includes(ccEmail))
-      
-      logToFile('constructRawMessage_new_message_cc_extracted', { 
+
+      logToFile('constructRawMessage_new_message_cc_extracted', {
         originalCc: params.cc,
         extractedCcEmails: ccEmailAddresses,
         toEmails: toEmailAddresses,
@@ -805,7 +823,7 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   if (params.body) {
     // Convert markdown syntax to HTML
     htmlBody = convertMarkdownToHtml(params.body, params.tracking_click_link)
-    logToFile('constructRawMessage_html_body', { 
+    logToFile('constructRawMessage_html_body', {
       htmlLength: htmlBody.length,
       originalBody: params.body,
       convertedHtml: htmlBody,
@@ -822,7 +840,7 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
 </head>
 <body>
   <div>${htmlBody}</div>`
-  
+
   // Add quoted content in Gmail's native collapsible format
   if (thread) {
     const quotedContent = getQuotedContent(thread)
@@ -846,7 +864,7 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
       logToFile('constructRawMessage_quoted_content_text_fallback', { textQuotedLength: quotedContent.text.length })
     }
   }
-  
+
   // Add tracking image if provided
   if (params.tracking_open_link) {
     htmlContent += `
@@ -865,11 +883,11 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
 
   const fullMessage = message.join('\r\n')
   const raw = Buffer.from(fullMessage).toString('base64url').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-  
+
   // Log the headers portion of the message for debugging
   const headerEndIndex = fullMessage.indexOf('\r\n\r\n')
   const headers = headerEndIndex > 0 ? fullMessage.substring(0, headerEndIndex) : fullMessage.substring(0, 1000)
-  
+
   logToFile('constructRawMessage_complete', {
     rawLength: raw.length,
     messagePartsCount: message.length,
