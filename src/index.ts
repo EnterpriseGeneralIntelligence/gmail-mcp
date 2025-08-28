@@ -93,7 +93,11 @@ const processMessagePart = (messagePart: MessagePart): MessagePart => {
   }
 
   if (messagePart.headers) {
-    messagePart.headers = messagePart.headers.filter(header => RESPONSE_HEADERS_LIST.includes(header.name || ''))
+    messagePart.headers = messagePart.headers.filter(header => 
+      RESPONSE_HEADERS_LIST.some(allowedHeader => 
+        allowedHeader.toLowerCase() === (header.name || '').toLowerCase()
+      )
+    )
   }
 
   return messagePart
