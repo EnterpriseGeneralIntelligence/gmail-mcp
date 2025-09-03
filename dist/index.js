@@ -527,8 +527,8 @@ const constructRawMessage = async (gmail, params) => {
     logToFile('constructRawMessage_boundary', { boundary });
     // Start building the message headers
     const message = [];
-    // For replies to threads, implement reply-all behavior
-    if (thread && thread.messages?.length) {
+    // For replies to threads, implement reply-all behavior (unless as_new_thread is true)
+    if (thread && thread.messages?.length && !params.as_new_thread) {
         logToFile('constructRawMessage_reply_mode', { threadId: validThreadId });
         const { to: replyToRecipients, cc: replyCcRecipients } = getReplyAllRecipients(thread, userEmail);
         logToFile('constructRawMessage_reply_recipients', {
@@ -628,14 +628,23 @@ const constructRawMessage = async (gmail, params) => {
         // Get the first message in the thread to extract headers
         const firstMessage = thread.messages[0];
         const lastMessage = thread.messages[thread.messages.length - 1];
-        // Add subject with Re: prefix if needed
-        subjectHeader = findHeader(lastMessage.payload?.headers || [], 'subject') || params.subject || '(No Subject)';
-        const originalSubject = subjectHeader;
-        if (subjectHeader && !subjectHeader.toLowerCase().startsWith('re:')) {
-            subjectHeader = `Re: ${subjectHeader}`;
+        // Add subject with Re: prefix if needed (unless as_new_thread is true)
+        if (params.as_new_thread && params.subject) {
+            // When as_new_thread is true, use the provided subject directly
+            subjectHeader = params.subject;
+            message.push(`Subject: ${wrapTextBody(sanitizeSubject(subjectHeader))}`);
+            logToFile('constructRawMessage_subject_new_thread', { subject: subjectHeader });
         }
-        message.push(`Subject: ${wrapTextBody(sanitizeSubject(subjectHeader))}`);
-        logToFile('constructRawMessage_subject', { originalSubject, finalSubject: subjectHeader });
+        else {
+            // Normal reply behavior
+            subjectHeader = findHeader(lastMessage.payload?.headers || [], 'subject') || params.subject || '(No Subject)';
+            const originalSubject = subjectHeader;
+            if (subjectHeader && !subjectHeader.toLowerCase().startsWith('re:')) {
+                subjectHeader = `Re: ${subjectHeader}`;
+            }
+            message.push(`Subject: ${wrapTextBody(sanitizeSubject(subjectHeader))}`);
+            logToFile('constructRawMessage_subject', { originalSubject, finalSubject: subjectHeader });
+        }
         // Add critical threading headers
         const references = [];
         // Collect all Message-IDs from the thread
@@ -768,7 +777,9 @@ const constructRawMessage = async (gmail, params) => {
         // Log a portion of the HTML part for debugging
         htmlPart: fullMessage.substring(fullMessage.indexOf('Content-Type: text/html'), Math.min(fullMessage.indexOf('Content-Type: text/html') + 500, fullMessage.length))
     });
-    return { raw, validThreadId };
+    // Don't set threadId if as_new_thread is true to create a completely separate thread
+    const finalThreadId = params.as_new_thread ? undefined : validThreadId;
+    return { raw, validThreadId: finalThreadId };
 };
 function createServer({ config }) {
     const server = new McpServer({
@@ -784,7 +795,8 @@ function createServer({ config }) {
         subject: z.string().optional().describe("The subject of the email"),
         body: z.string().optional().describe("The body of the email"),
         tracking_open_link: z.string().optional().describe("URL for tracking email opens - embeds invisible image with this src"),
-        tracking_click_link: z.string().optional().describe("Base URL for tracking clicks - replaces all links with this URL + encoded original URL")
+        tracking_click_link: z.string().optional().describe("Base URL for tracking clicks - replaces all links with this URL + encoded original URL"),
+        as_new_thread: z.boolean().optional().describe("When true, creates a completely new thread: uses provided subject/recipients directly, doesn't associate with the original thread, but still includes quoted content")
     }, async (params) => {
         return handleTool(config, async (gmail) => {
             // Log the create_draft request
@@ -1049,7 +1061,8 @@ function createServer({ config }) {
         subject: z.string().optional().describe("The subject of the email"),
         body: z.string().optional().describe("The body of the email"),
         tracking_open_link: z.string().optional().describe("URL for tracking email opens - embeds invisible image with this src"),
-        tracking_click_link: z.string().optional().describe("Base URL for tracking clicks - replaces all links with this URL + encoded original URL")
+        tracking_click_link: z.string().optional().describe("Base URL for tracking clicks - replaces all links with this URL + encoded original URL"),
+        as_new_thread: z.boolean().optional().describe("When true, creates a completely new thread: uses provided subject/recipients directly, doesn't associate with the original thread, but still includes quoted content")
     }, async (params) => {
         return handleTool(config, async (gmail) => {
             // Log the send_message request
