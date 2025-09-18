@@ -373,6 +373,18 @@ const convertMarkdownToHtml = (text, tracking_click_link) => {
         if (!cleanUrl.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:/)) {
             finalUrl = 'https://' + cleanUrl;
         }
+        // Use URL constructor to properly handle encoding
+        try {
+            const urlObj = new URL(finalUrl);
+            finalUrl = urlObj.href;
+        }
+        catch (e) {
+            // If URL constructor fails, keep the original URL
+            logToFile('convertMarkdownToHtml_url_parse_error', {
+                url: finalUrl,
+                error: e instanceof Error ? e.message : String(e)
+            });
+        }
         if (tracking_click_link) {
             const encodedOriginalUrl = encodeURIComponent(finalUrl);
             finalUrl = `${tracking_click_link}?url=${encodedOriginalUrl}`;
@@ -383,7 +395,7 @@ const convertMarkdownToHtml = (text, tracking_click_link) => {
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
-        const href = tracking_click_link ? finalUrl : encodeURI(finalUrl);
+        const href = finalUrl; // URL constructor already handles encoding properly
         const result = `<a href="${href}" target="_blank">${escapedLinkText}</a>`;
         logToFile('convertMarkdownToHtml_link', {
             match, linkText, url, cleanUrl, finalUrl, escapedLinkText, result,
@@ -427,7 +439,16 @@ const convertMarkdownToHtml = (text, tracking_click_link) => {
                 if (cleanUrl.startsWith('www.')) {
                     finalUrl = 'https://' + cleanUrl;
                 }
-                return `<a href="${encodeURI(finalUrl)}" target="_blank">${cleanUrl}</a>${trailingPunctuation}`;
+                // Use URL constructor to properly handle encoding
+                try {
+                    const urlObj = new URL(finalUrl);
+                    finalUrl = urlObj.href;
+                }
+                catch (e) {
+                    // If URL constructor fails, use encodeURI as fallback
+                    finalUrl = encodeURI(finalUrl);
+                }
+                return `<a href="${finalUrl}" target="_blank">${cleanUrl}</a>${trailingPunctuation}`;
             });
         }
     }).join('');
@@ -632,7 +653,7 @@ const constructRawMessage = async (gmail, params) => {
         if (params.as_new_thread && params.subject) {
             // When as_new_thread is true, use the provided subject directly
             subjectHeader = params.subject;
-            message.push(`Subject: ${wrapTextBody(sanitizeSubject(subjectHeader))}`);
+            message.push(`Subject: ${sanitizeSubject(subjectHeader)}`);
             logToFile('constructRawMessage_subject_new_thread', { subject: subjectHeader });
         }
         else {
@@ -642,7 +663,7 @@ const constructRawMessage = async (gmail, params) => {
             if (subjectHeader && !subjectHeader.toLowerCase().startsWith('re:')) {
                 subjectHeader = `Re: ${subjectHeader}`;
             }
-            message.push(`Subject: ${wrapTextBody(sanitizeSubject(subjectHeader))}`);
+            message.push(`Subject: ${sanitizeSubject(subjectHeader)}`);
             logToFile('constructRawMessage_subject', { originalSubject, finalSubject: subjectHeader });
         }
         // Add critical threading headers
@@ -667,7 +688,7 @@ const constructRawMessage = async (gmail, params) => {
     }
     else if (params.subject) {
         subjectHeader = params.subject;
-        message.push(`Subject: ${wrapTextBody(sanitizeSubject(params.subject))}`);
+        message.push(`Subject: ${sanitizeSubject(params.subject)}`);
         logToFile('constructRawMessage_new_subject', { subject: params.subject });
     }
     else {
